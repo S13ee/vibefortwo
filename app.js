@@ -18,13 +18,22 @@ const ROLE_KO = { pending: '승인 대기', member: '멤버', manager: '매니�
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-const blankEntry = () => ({ title:'', topic:'', detail:'', url:'', plan:'', html:'', files:[], progress:0, done:false });
+const blankEntry = () => ({ title:'', topic:'', detail:'', url:'', plan:'', html:'', files:[], progress:0, done:false, result_kind:'web', res:null });
 const kindOf = (name, type) => TEXT_EXT.test(name) || (type || '').startsWith('text/') ? 'text' : (type || '').startsWith('image/') ? 'image' : 'other';
+// 결과물 종류: 웹앱·링크는 주소로, 프로그램·파일은 파일 하나로 받습니다
+const RESULT_KINDS = [['web', '웹앱'], ['program', '프로그램'], ['file', '파일'], ['link', '링크']];
+const RK = Object.fromEntries(RESULT_KINDS);
+const rkOf = e => RK[e && e.result_kind] ? e.result_kind : 'web';
+const isFileKind = k => k === 'program' || k === 'file';
+const IMG_EXT = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
+const safeName = (n, d) => n.replace(/[^A-Za-z0-9._-]/g, '_').slice(-60) || d;
+const resUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r) : null) : (r.data || null);
 
 let state = { members: [], projects: [], works: [] };
 const auth = { user: null, me: null };
 const ui = { view:'home', pid:null, panel:null, tab:'plan', htmlView:'code', viewFile:null, viewData:null, pendingDel:null,
-  worksBy:'all', work:null, memberMenu:null, confirmRemove:null, showPending:false, pendingNote:null, authTab:'login', authMsg:null, busy:false, loadError:null };
+  worksBy:'all', work:null, memberMenu:null, confirmRemove:null, showPending:false, pendingNote:null, authTab:'login', authMsg:null, busy:false, loadError:null,
+  confirmProjDel:null, resDel:null };
 
 /* ---------- permissions ---------- */
 const lv = () => auth.me ? (ROLE_LV[auth.me.role] || 0) : 0;
@@ -109,7 +118,13 @@ const Local = {
   persist() { try { localStorage.setItem(KEY, JSON.stringify(state)); setSave('ok'); } catch (e) { setSave('err', e); } },
   async reload() {},
   async createProject(no) { const np = { id: uid(), no, sub:'', start:'', end:'', entries:{}, notes:[] }; state.projects.push(np); this.persist(); return np; },
+  async deleteProject(p) { state.projects = state.projects.filter(x => x.id !== p.id); this.persist(); },
   async updateProject(p) { this.persist(); },
+  async setResult(p, mid, f) {
+    const e = ent(p, mid);
+    e.res = f ? { name: f.name, size: f.size, data: f.size <= MAX_FILE ? await readAsDataURL(f) : null } : null;
+    this.persist();
+  },
   async saveEntry() { this.persist(); },
   async addNote(p, text) { p.notes.unshift({ id: uid(), text, by: auth.me ? auth.me.id : null, at: Date.now() }); this.persist(); },
   async delNote(p, id) { p.notes = p.notes.filter(n => n.id !== id); this.persist(); },
@@ -169,7 +184,8 @@ const Live = {
     state.members = m.map(x => ({ id: x.id, name: x.name, role: x.role, userId: x.user_id }));
     state.projects = p.map(x => ({ id: x.id, no: x.no, sub: x.subtitle || '', start: x.start_date || '', end: x.end_date || '', entries: {}, notes: [] }));
     const byId = Object.fromEntries(state.projects.map(x => [x.id, x]));
-    e.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.entries[x.member_id] = { title: x.title, topic: x.topic, detail: x.detail, url: x.url, plan: x.plan, html: x.html, progress: x.progress, done: !!x.done, files: [] }; });
+    e.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.entries[x.member_id] = { title: x.title, topic: x.topic, detail: x.detail, url: x.url, plan: x.plan, html: x.html, progress: x.progress, done: !!x.done, files: [],
+      result_kind: x.result_kind || 'web', res: x.result_path ? { path: x.result_path, name: x.result_name || '결과물', size: +x.result_size || 0 } : null }; });
     n.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.notes.push({ id: x.id, text: x.body, by: x.author_id, at: Date.parse(x.created_at) }); });
     f.forEach(x => { const pr = byId[x.project_id]; if (pr) ent(pr, x.member_id).files.push({ id: x.id, name: x.name, size: x.size, type: x.mime, added: Date.parse(x.created_at), path: x.path, kind: kindOf(x.name, x.mime) }); });
     state.works = wk.map(x => ({ id: x.id, by: x.member_id, title: x.title, topic: x.topic, detail: x.detail, url: x.url, html: x.html, image: x.image_path, at: Date.parse(x.created_at) }));
@@ -207,6 +223,30 @@ const Live = {
   async createProject(no) {
     const { data, error } = await sb.from('vft_projects').insert({ no }).select().single(); if (error) throw error;
     const np = { id: data.id, no: data.no, sub: '', start: '', end: '', entries: {}, notes: [] }; state.projects.push(np); return np;
+  },
+  async deleteProject(p) {
+    // 표에서 먼저 지우고(칸·노트·파일 목록은 함께 지워짐), 성공하면 저장소의 실제 파일을 정리합니다
+    const paths = [];
+    Object.values(p.entries).forEach(e => { (e.files || []).forEach(f => f.path && paths.push(f.path)); if (e.res && e.res.path) paths.push(e.res.path); });
+    const { data, error } = await sb.from('vft_projects').delete().eq('id', p.id).select('id'); if (error) throw error;
+    if (!data.length) throw new Error('권한이 없습니다.');
+    if (paths.length) await sb.storage.from(BUCKET).remove(paths);
+    state.projects = state.projects.filter(x => x.id !== p.id);
+  },
+  async setResult(p, mid, f) {
+    const e = ent(p, mid), old = e.res;
+    let row = { result_path: '', result_name: '', result_size: 0 }, path = null;
+    if (f) {
+      if (f.size > MAX_FILE) throw new Error(`${f.name}: 결과물 파일은 10MB까지 올릴 수 있습니다. 더 큰 파일은 '링크'로 공유해 주세요.`);
+      path = `${p.id}/${mid}/result-${Date.now().toString(36)}${uid()}-${safeName(f.name, 'file')}`;
+      const up = await sb.storage.from(BUCKET).upload(path, f, { contentType: f.type || 'application/octet-stream', upsert: false });
+      if (up.error) throw up.error;
+      row = { result_path: path, result_name: f.name, result_size: f.size };
+    }
+    const { error } = await sb.from('vft_entries').upsert(Object.assign({ project_id: p.id, member_id: mid, updated_at: new Date().toISOString() }, row), { onConflict: 'project_id,member_id' });
+    if (error) { if (path) await sb.storage.from(BUCKET).remove([path]); throw error; }
+    if (old && old.path) await sb.storage.from(BUCKET).remove([old.path]);
+    e.res = f ? { path, name: f.name, size: f.size } : null;
   },
   async updateProject(p, patch) {
     const row = {};
@@ -275,7 +315,7 @@ async function refresh() {
 }
 
 /* ---------- navigation ---------- */
-function openProject(id) { ui.view='project'; ui.pid=id; ui.pick=null; ui.panel=null; ui.viewFile=null; ui.memberMenu=null; ui.confirmRemove=null; ui.showPending=false; render(); window.scrollTo(0, 0); }
+function openProject(id) { ui.view='project'; ui.pid=id; ui.pick=null; ui.panel=null; ui.viewFile=null; ui.memberMenu=null; ui.confirmRemove=null; ui.showPending=false; ui.confirmProjDel=null; ui.resDel=null; render(); window.scrollTo(0, 0); }
 function goHome() { ui.view='home'; ui.pid=null; ui.panel=null; ui.memberMenu=null; render(); window.scrollTo(0, 0); }
 
 /* ---------- dates ---------- */
@@ -548,6 +588,38 @@ function memberBarHTML() {
   return out;
 }
 
+const RK_HINT = { web: '배포한 웹앱 주소', link: 'GitHub, 노션, 영상 등의 주소', program: '실행 파일, 압축 파일, 코드 파일', file: '이미지, PDF, 문서, 영상 등' };
+function resultHTML(m, e, id, edit, okUrl) {
+  const k = rkOf(e);
+  const kinds = edit
+    ? `<div class="rk" role="radiogroup" aria-label="결과물 종류">${RESULT_KINDS.map(([v, l]) =>
+        `<button type="button" class="rk-b${k === v ? ' on' : ''}" role="radio" aria-checked="${k === v}" data-act="rkind" data-m="${m.id}" data-k="${v}">${l}</button>`).join('')}</div>`
+    : `<span class="rk-tag">${RK[k]}</span>`;
+  let body;
+  if (!isFileKind(k)) {
+    body = !edit && !e.url.trim() ? '<p class="r-empty">아직 올린 결과물이 없습니다</p>'
+      : `<div class="url-row">
+          <input id="u-${id}" type="url" inputmode="url" data-bind="entry" data-m="${m.id}" data-f="url" value="${esc(e.url)}" placeholder="${edit ? RK_HINT[k] + ' (https://)' : ''}" aria-label="결과물 주소"${edit ? '' : ' readonly'}>
+          <button class="btn" data-act="copy-url" data-target="u-${id}">복사</button>
+          <a class="btn ghost" id="o-${id}" href="${okUrl ? esc(e.url.trim()) : '#'}" target="_blank" rel="noopener" ${okUrl ? '' : 'hidden'}>열기</a>
+        </div>`;
+  } else {
+    const r = e.res, url = resUrl(r), input = edit ? `<input id="rfile-${id}" class="sr" type="file" data-m="${m.id}">` : '';
+    if (r) {
+      const del = !edit ? '' : ui.resDel === m.id
+        ? `<button class="btn danger" data-act="res-del" data-m="${m.id}">한 번 더 누르면 삭제</button>`
+        : `<button class="btn ghost" data-act="res-del" data-m="${m.id}">지우기</button>`;
+      body = `<div class="rfile">
+          <span class="rf-txt"><b class="rf-name" title="${esc(r.name)}">${esc(r.name)}</b><small>${fmtSize(r.size)}${url ? '' : ' · 용량이 커서 이름만 저장됨'}</small></span>
+          ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener" download="${esc(r.name)}">받기</a>` : ''}
+          ${edit ? `<label class="btn ghost" for="rfile-${id}">바꾸기</label>` : ''}${del}${input}
+        </div>`;
+    } else body = edit
+      ? `<label class="rdrop" for="rfile-${id}" data-m="${m.id}"><b>결과물 파일 올리기</b><small>${RK_HINT[k]} · 끌어다 놓아도 됩니다 · ${LIVE ? '10MB까지' : '700KB까지 미리보기 저장'}</small></label>${input}`
+      : '<p class="r-empty">아직 올린 결과물이 없습니다</p>';
+  }
+  return `<div class="fld rfld"><div class="rhead"><span class="rlabel">결과물</span>${kinds}</div>${body}</div>`;
+}
 function cardHTML(p, m) {
   const e = ent(p, m.id), open = ui.panel === m.id, id = `${p.id}-${m.id}`, edit = can.entry(m.id);
   const ro = edit ? '' : ' readonly', dis = edit ? '' : ' disabled';
@@ -563,15 +635,10 @@ function cardHTML(p, m) {
     </header>
     <div class="pbar" aria-hidden="true"><i id="pb-${id}" style="width:${+e.progress || 0}%"></i></div>
     <div class="card-b">
-      <label class="fld"><span>프로젝트 제목</span><input id="t-${id}" data-bind="entry" data-m="${m.id}" data-f="title" value="${esc(e.title)}" placeholder="${edit ? '내 웹앱의 이름' : ''}"${ro}></label>
+      <label class="fld"><span>프로젝트 제목</span><input id="t-${id}" data-bind="entry" data-m="${m.id}" data-f="title" value="${esc(e.title)}" placeholder="${edit ? '결과물의 이름' : ''}"${ro}></label>
       <label class="fld"><span>주제</span><input id="p-${id}" data-bind="entry" data-m="${m.id}" data-f="topic" value="${esc(e.topic)}" placeholder="${edit ? '무엇을 만드는지 한 줄로' : ''}"${ro}></label>
       <label class="fld"><span>상세 내용</span><textarea id="d-${id}" rows="5" data-bind="entry" data-m="${m.id}" data-f="detail" placeholder="${edit ? '기능, 진행 상황, 막힌 점 등' : ''}"${ro}>${esc(e.detail)}</textarea></label>
-      <div class="fld"><label for="u-${id}">웹앱 주소</label>
-        <div class="url-row">
-          <input id="u-${id}" type="url" inputmode="url" data-bind="entry" data-m="${m.id}" data-f="url" value="${esc(e.url)}" placeholder="${edit ? 'https://' : ''}"${ro}>
-          <button class="btn" data-act="copy-url" data-target="u-${id}">복사</button>
-          <a class="btn ghost" id="o-${id}" href="${okUrl ? esc(e.url.trim()) : '#'}" target="_blank" rel="noopener" ${okUrl ? '' : 'hidden'}>열기</a>
-        </div></div>
+      ${resultHTML(m, e, id, edit, okUrl)}
       <label class="done-row${e.done ? ' on' : ''}"><input type="checkbox" id="dn-${id}" data-bind="entry" data-m="${m.id}" data-f="done"${e.done ? ' checked' : ''}${dis}>
         <span class="sw" aria-hidden="true"></span><span class="dt"><b>${e.done ? '작업 완료' : '작업 완료로 표시'}</b><small>${e.done ? 'Works에 공개되어 있습니다' : '완료하면 Works에 모입니다'}</small></span></label>
       <button class="ws-btn" data-act="toggle-panel" data-m="${m.id}" aria-expanded="${open}">
@@ -649,8 +716,13 @@ function workData(it) {
     const w = it.w;
     return { title: w.title, topic: w.topic, url: w.url, html: w.html, img: w.image ? (LIVE ? Live.imgUrl(w.image) : w.image) : null, meta: '개인 작업', prog: null };
   }
-  const e = it.e, img = (e.files || []).find(f => f.kind === 'image' && (LIVE ? f.path : f.data));
-  return { title: e.title, topic: e.topic, url: e.url, html: e.html, img: img ? (LIVE ? Live.fileUrl(img) : img.data) : null, meta: 'Project ' + it.p.no, prog: +e.progress || 0 };
+  const e = it.e, k = rkOf(e), res = isFileKind(k) ? e.res : null, rurl = resUrl(res);
+  const img = (e.files || []).find(f => f.kind === 'image' && (LIVE ? f.path : f.data));
+  const resImg = res && rurl && IMG_EXT.test(res.name) ? rurl : null;
+  return { title: e.title, topic: e.topic, url: isFileKind(k) ? '' : e.url, html: e.html,
+    img: resImg || (img ? (LIVE ? Live.fileUrl(img) : img.data) : null),
+    file: res && rurl ? { name: res.name, url: rurl } : null, kind: RK[k],
+    meta: `Project ${it.p.no} · ${RK[k]}`, prog: +e.progress || 0 };
 }
 const hasVis = it => { const d = workData(it); return !!((d.html || '').trim() || d.img); };
 const sortWorks = l => [...l.filter(hasVis), ...l.filter(x => !hasVis(x))];
@@ -678,7 +750,8 @@ function worksHTML() {
         ${d.topic ? `<p class="wt-topic">${esc(d.topic)}</p>` : ''}
         ${d.prog != null ? `<div class="wt-bar"><i style="width:${d.prog}%"></i></div>` : ''}
         <div class="wt-foot">
-          ${okUrl ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${esc(hostOf(url) || '웹앱')} 열기 ↗</a>` : ''}
+          ${okUrl ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${esc(hostOf(url) || '링크')} 열기 ↗</a>` : ''}
+          ${d.file ? `<a class="btn" href="${esc(d.file.url)}" target="_blank" rel="noopener" download="${esc(d.file.name)}" title="${esc(d.file.name)}">${d.kind} 받기 ↓</a>` : ''}
           ${more}
         </div>
       </div></article>`;
@@ -721,7 +794,7 @@ function renderWork() {
       <h2>${esc(w.title)}</h2>${w.topic ? `<p class="login-sub">${esc(w.topic)}</p>` : ''}
       ${vis}${w.detail ? `<p class="wv-detail">${esc(w.detail)}</p>` : ''}
       <div class="wv-actions">
-        ${okUrl ? `<a class="btn solid" href="${esc(url)}" target="_blank" rel="noopener">${esc(hostOf(url) || '웹앱')} 열기 ↗</a>` : ''}
+        ${okUrl ? `<a class="btn solid" href="${esc(url)}" target="_blank" rel="noopener">${esc(hostOf(url) || '링크')} 열기 ↗</a>` : ''}
         ${(w.html || '').trim() ? `<button class="btn" data-act="work-copy" data-id="${w.id}">HTML 복사</button>` : ''}
         <span class="sp"></span>
         ${canWork(w) ? `<button class="btn" data-act="work-edit" data-id="${w.id}">수정</button>
@@ -738,7 +811,7 @@ function renderWork() {
     <label class="lf"><span>제목 *</span><input id="wk-title" maxlength="80" value="${esc(v.title)}" placeholder="작업 이름"></label>
     <label class="lf"><span>한 줄 소개</span><input id="wk-topic" maxlength="120" value="${esc(v.topic)}" placeholder="무엇을 만들었는지 한 줄로"></label>
     <label class="lf"><span>설명</span><textarea id="wk-detail" rows="3" placeholder="만든 과정, 사용한 도구, 참고한 것 등">${esc(v.detail)}</textarea></label>
-    <label class="lf"><span>웹앱 주소</span><input id="wk-url" type="url" inputmode="url" value="${esc(v.url)}" placeholder="https://"></label>
+    <label class="lf"><span>링크 <small>(웹앱, GitHub, 노션, 영상 등)</small></span><input id="wk-url" type="url" inputmode="url" value="${esc(v.url)}" placeholder="https://"></label>
     <div class="lf"><span>HTML <small>(붙여 넣으면 Works에 실제 화면이 썸네일로 보입니다)</small></span>
       <textarea id="wk-html" rows="4" spellcheck="false" class="mono" placeholder="<!doctype html> 부터 붙여 넣거나 파일을 불러오세요">${esc(v.html)}</textarea>
       <div class="wk-row"><label class="btn" for="wk-htmlfile">HTML 파일 불러오기</label><input id="wk-htmlfile" class="sr" type="file" accept=".html,.htm,text/html"></div></div>
@@ -760,7 +833,7 @@ async function submitWork() {
   const st = ui.work, data = readWorkForm();
   const keep = () => { const v = readWorkForm(); return v; };
   if (!data.title) { st.err = '제목을 입력하세요'; const snap = keep(); renderWork(); refill(snap); return; }
-  if (data.url && !/^https?:\/\/\S+/i.test(data.url)) { st.err = '웹앱 주소는 https:// 로 시작해야 합니다'; const snap = keep(); renderWork(); refill(snap); return; }
+  if (data.url && !/^https?:\/\/\S+/i.test(data.url)) { st.err = '링크는 https:// 로 시작해야 합니다'; const snap = keep(); renderWork(); refill(snap); return; }
   const prev = st.mode === 'edit' ? (state.works || []).find(x => x.id === st.id) : null;
   const saved = await Store.saveWork(prev, data, { file: st.file, removeImg: st.removeImg });
   renderSidebar(); if (ui.view === 'works') renderMain();
@@ -809,7 +882,11 @@ function renderMain() {
       <h1 class="ptitle">Project ${p.no}</h1>
       ${subEdit ? `<input class="subinput" id="sub-${p.id}" data-bind="sub" value="${esc(p.sub)}" placeholder="부제 입력" aria-label="Project ${p.no} 부제">`
         : `<p class="subtext">${esc(p.sub)}</p>`}
+      ${can.admin() && ui.confirmProjDel !== p.id ? `<button class="btn ghost pdel" data-act="ask-del-proj">프로젝트 삭제</button>` : ''}
     </header>
+    ${can.admin() && ui.confirmProjDel === p.id ? `<div class="mbar warn proj-del" role="alert">
+      <p><b>Project ${p.no}</b>${p.sub ? ` (${esc(p.sub)})` : ''}을(를) 지우면 이 프로젝트의 모든 칸 내용, 결과물, 노트, 파일이 함께 지워집니다. 되돌릴 수 없습니다.</p>
+      <button class="btn danger" data-act="del-proj">삭제</button><button class="btn ghost" data-act="cancel-del-proj">취소</button></div>` : ''}
     <div class="top-row">
       <section class="tr"><div class="period lg">
         <div id="cal">${calHTML(p)}</div>
@@ -945,7 +1022,20 @@ async function addFiles(list, mid) {
   }
   setSave('ok'); renderMain(); if (n) toast(`파일 ${n}개를 올렸습니다`);
 }
+function setResultFile(f, mid) {
+  const p = cur(); if (!can.entry(mid)) return;
+  guarded(async () => {
+    setSave('saving');
+    try { await Store.setResult(p, mid, f); setSave('ok'); } catch (e) { setSave('idle'); throw e; }
+    ui.resDel = null; renderMain(); renderSidebar(); toast(`${f.name}을(를) 결과물로 올렸습니다`);
+  });
+}
 function bindDrop() {
+  document.querySelectorAll('.rdrop').forEach(d => {
+    d.addEventListener('dragover', ev => { ev.preventDefault(); d.classList.add('over'); });
+    d.addEventListener('dragleave', () => d.classList.remove('over'));
+    d.addEventListener('drop', ev => { ev.preventDefault(); d.classList.remove('over'); if (ev.dataTransfer.files[0]) setResultFile(ev.dataTransfer.files[0], d.dataset.m); });
+  });
   const d = document.getElementById('drop'); if (!d) return;
   d.addEventListener('dragover', ev => { ev.preventDefault(); d.classList.add('over'); });
   d.addEventListener('dragleave', () => d.classList.remove('over'));
@@ -1002,6 +1092,22 @@ document.addEventListener('click', ev => {
     const np = await Store.createProject(no); openProject(np.id);
     const s = document.getElementById('sub-' + np.id); if (s) s.focus();
   });
+  else if (a === 'ask-del-proj') { if (!can.admin()) return; ui.confirmProjDel = p.id; renderMain(); }
+  else if (a === 'cancel-del-proj') { ui.confirmProjDel = null; renderMain(); }
+  else if (a === 'del-proj') guarded(async () => {
+    if (!can.admin() || ui.confirmProjDel !== p.id) return;
+    await Store.deleteProject(p); ui.confirmProjDel = null; goHome(); toast(`Project ${p.no}을(를) 지웠습니다`);
+  });
+  else if (a === 'rkind') {
+    const mid = b.dataset.m, k = b.dataset.k; if (!can.entry(mid) || !RK[k]) return;
+    const e = ent(p, mid); if (rkOf(e) === k) return;
+    e.result_kind = k; ui.resDel = null; queueEntry(p, mid, { result_kind: k }); renderMain();
+  }
+  else if (a === 'res-del') {
+    const mid = b.dataset.m; if (!can.entry(mid)) return;
+    if (ui.resDel !== mid) { ui.resDel = mid; renderMain(); return; }
+    guarded(async () => { setSave('saving'); await Store.setResult(p, mid, null); ui.resDel = null; setSave('ok'); renderMain(); renderSidebar(); toast('결과물 파일을 지웠습니다'); });
+  }
   else if (a === 'member-menu') { const id = b.dataset.m; ui.memberMenu = ui.memberMenu === id && !ui.confirmRemove ? null : id; ui.confirmRemove = null; renderMain(); }
   else if (a === 'ask-remove') { ui.confirmRemove = b.dataset.m; renderMain(); }
   else if (a === 'remove-member') guarded(async () => {
@@ -1015,7 +1121,7 @@ document.addEventListener('click', ev => {
   else if (a === 'toggle-pending') { ui.showPending = !ui.showPending; renderMain(); }
   else if (a === 'approve') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); await Store.setRole(m, 'member'); renderMain(); toast(`${m.name}의 가입을 승인했습니다`); });
   else if (a === 'reject') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); await Store.removeMember(m); renderMain(); toast(`${m.name}의 신청을 거절했습니다`); });
-  else if (a === 'copy-url') { const i = document.getElementById(b.dataset.target); if (!i.value.trim()) { toast('웹앱 주소가 비어 있습니다'); return; } copyText(i.value.trim(), i); }
+  else if (a === 'copy-url') { const i = document.getElementById(b.dataset.target); if (!i.value.trim()) { toast('주소가 비어 있습니다'); return; } copyText(i.value.trim(), i); }
   else if (a === 'copy-html') { const h = ent(p, b.dataset.m).html; if (!h.trim()) { toast('복사할 HTML이 없습니다'); return; } copyText(h, document.querySelector('.code')); }
   else if (a === 'toggle-panel') {
     const mid = b.dataset.m; ui.panel = ui.panel === mid ? null : mid; ui.viewFile = null; ui.pendingDel = null; renderMain();
@@ -1088,6 +1194,7 @@ document.addEventListener('input', ev => {
 document.addEventListener('change', async ev => {
   const t = ev.target;
   if (t.id === 'upfile' && t.files.length) await addFiles(t.files, t.dataset.m);
+  else if (t.id && t.id.startsWith('rfile-') && t.files[0]) setResultFile(t.files[0], t.dataset.m);
   else if (t.id === 'wk-img' && t.files[0]) { const snap = readWorkForm(); ui.work.file = t.files[0]; ui.work.removeImg = false; renderWork(); refill(snap); }
   else if (t.id === 'wk-htmlfile' && t.files[0]) { document.getElementById('wk-html').value = await t.files[0].text(); toast(`${t.files[0].name}을(를) 불러왔습니다`); }
   else if (t.id === 'htmlfile' && t.files[0]) {

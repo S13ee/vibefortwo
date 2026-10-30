@@ -273,7 +273,7 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .app.proj-mode{--lg-tint:linear-gradient(150deg,rgba(255,255,255,.14) 0%,rgba(255,255,255,.05) 34%,rgba(255,255,255,.02) 60%,rgba(255,255,255,.09) 100%)}
 .app.proj-mode .period,.app.proj-mode .board,.app.proj-mode .card,.app.proj-mode .panel,.app.proj-mode .wt{position:relative;isolation:isolate;
   background:var(--lg-tint),rgba(14,16,15,.34);-webkit-backdrop-filter:blur(26px) saturate(1.8) brightness(1.04);backdrop-filter:blur(26px) saturate(1.8) brightness(1.04);
-  border:1px solid rgba(255,255,255,.1);border-radius:26px;
+  border:1px solid rgba(255,255,255,.1);border-radius:20px;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.3),inset 0 -1px 0 rgba(255,255,255,.06),inset 0 0 24px rgba(255,255,255,.035),0 24px 60px rgba(0,0,0,.32),0 2px 8px rgba(0,0,0,.18)}
 .app.proj-mode .period::before,.app.proj-mode .board::before,.app.proj-mode .card::before,.app.proj-mode .panel::before,.app.proj-mode .wt::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;z-index:2;
   background:linear-gradient(140deg,rgba(255,255,255,.6),rgba(255,255,255,.1) 26%,rgba(255,255,255,0) 50%,rgba(255,255,255,.12) 78%,rgba(255,255,255,.42));
@@ -282,7 +282,7 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .app.proj-mode .card-h,.app.proj-mode .panel-h{background:transparent;border-bottom:1px solid rgba(255,255,255,.08)}
 .app.proj-mode .pbar{background:rgba(255,255,255,.06)}
 .app.proj-mode .pbar i{background:linear-gradient(90deg,rgba(255,255,255,.55),#fff);box-shadow:0 0 10px rgba(255,255,255,.45)}
-.app.proj-mode .fld input,.app.proj-mode .fld textarea,.app.proj-mode .code,.app.proj-mode .plan,.app.proj-mode .note-form textarea,.app.proj-mode .pk,.app.proj-mode .viewer,.app.proj-mode .flist{background:rgba(0,0,0,.24);border-color:rgba(255,255,255,.09);border-radius:14px;box-shadow:inset 0 1px 3px rgba(0,0,0,.28)}
+.app.proj-mode .fld input,.app.proj-mode .fld textarea,.app.proj-mode .code,.app.proj-mode .plan,.app.proj-mode .note-form textarea,.app.proj-mode .pk,.app.proj-mode .viewer,.app.proj-mode .flist{background:rgba(0,0,0,.24);border-color:rgba(255,255,255,.09);border-radius:10px;box-shadow:inset 0 1px 3px rgba(0,0,0,.28)}
 .app.proj-mode .fld input:focus,.app.proj-mode .fld textarea:focus,.app.proj-mode .code:focus,.app.proj-mode .plan:focus,.app.proj-mode .note-form textarea:focus{background:rgba(0,0,0,.32);border-color:rgba(255,255,255,.38)}
 .app.proj-mode .btn,.app.proj-mode .ws-btn,.app.proj-mode .gsel,.app.proj-mode .calbtn{border-radius:999px;background-color:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);box-shadow:inset 0 1px 0 rgba(255,255,255,.2);color:var(--ink)}
 .app.proj-mode .btn:hover,.app.proj-mode .ws-btn:hover,.app.proj-mode .gsel:hover,.app.proj-mode .calbtn:hover,.app.proj-mode .ws-btn[aria-expanded="true"]{background-color:rgba(255,255,255,.15)}
@@ -313,20 +313,20 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .app.home-mode .side-foot .savenote{margin:0 6px}
 .modal{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:16px}
 .modal-bg{position:absolute;inset:0;background:rgba(6,8,7,.45);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
-.login-card{position:relative;width:min(100%,360px);display:flex;flex-direction:column;gap:14px;padding:28px 26px 26px;border-radius:26px;color:#F2F3F0;
+.login-card{position:relative;width:min(100%,360px);display:flex;flex-direction:column;gap:14px;padding:28px 26px 26px;border-radius:20px;color:#F2F3F0;
   background:linear-gradient(150deg,rgba(255,255,255,.16),rgba(255,255,255,.04) 40%,rgba(255,255,255,.08)),rgba(16,18,17,.5);-webkit-backdrop-filter:blur(28px) saturate(1.8);backdrop-filter:blur(28px) saturate(1.8);
   border:1px solid rgba(255,255,255,.16);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 30px 80px rgba(0,0,0,.45)}
 .login-card h2{margin:0;font:600 22px/1.2 var(--f-display)}
 .login-sub{margin:-8px 0 4px;font-size:13px;color:rgba(242,243,240,.62)}
 .lf{display:flex;flex-direction:column;gap:6px}
 .lf span{font-size:12px;color:rgba(242,243,240,.7)}
-.lf input{border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(0,0,0,.28);padding:11px 13px;font-size:14px;color:#F2F3F0;box-shadow:inset 0 1px 3px rgba(0,0,0,.3)}
+.lf input{border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(0,0,0,.28);padding:11px 13px;font-size:14px;color:#F2F3F0;box-shadow:inset 0 1px 3px rgba(0,0,0,.3)}
 .lf input:focus{outline:none;border-color:rgba(255,255,255,.4)}
 .lf input::placeholder{color:rgba(242,243,240,.35)}
 .login-card .err-text{color:#FFB4A6;margin:0}
 .login-card .btn.login-go{margin-top:4px;padding:11px;border-radius:999px;background:rgba(255,255,255,.92);color:#111114;border:0;font-size:14px}
 .login-card .btn.login-go:hover{background:#fff}
-.login-x{position:absolute;top:14px;right:14px;width:32px;height:32px;border-radius:50%;border:0;background:transparent;color:rgba(242,243,240,.7);font-size:20px;line-height:1}
+.login-x{position:absolute;top:25px;right:18px;width:32px;height:32px;border-radius:50%;border:0;background:transparent;color:rgba(242,243,240,.7);font-size:20px;line-height:1}
 .login-x:hover{background:rgba(255,255,255,.1);color:#fff}
 @media (hover:none){.app.home-mode.side-open ~ .login-top{display:none}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -344,17 +344,17 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .link-btn:hover{color:#fff}
 .login-card .btn.login-alt,.login-card .btn.ghostish{background:rgba(255,255,255,.08);color:#F2F3F0;border:1px solid rgba(255,255,255,.16);border-radius:999px;padding:10px}
 .login-card .btn.ghostish:hover,.login-card .btn.login-alt:hover{background:rgba(255,255,255,.16)}
-.notice{padding:12px 16px;border-radius:16px;font-size:13px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:var(--ink)}
+.notice{padding:12px 16px;border-radius:12px;font-size:13px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:var(--ink)}
 .notice.warn{border-color:rgba(255,138,117,.4);color:#FFB4A6}
 .load-err{position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:7;margin:0;padding:8px 14px;border-radius:999px;font-size:12px;background:rgba(40,12,8,.7);color:#FFB4A6}
 .subtext{margin:0;font-size:18px;color:var(--ink);opacity:.85}
 .plist-empty{margin:0;padding:8px 10px;font-size:12px;color:var(--muted)}
-.note-lock{margin:0;padding:12px 14px;border-radius:14px;font-size:13px;color:var(--muted);background:rgba(0,0,0,.18)}
+.note-lock{margin:0;padding:12px 14px;border-radius:10px;font-size:13px;color:var(--muted);background:rgba(0,0,0,.18)}
 .chip em{font-style:normal;font:500 10px/1 var(--f-body);letter-spacing:0;opacity:.75;margin-left:2px}
 .chip.me{box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)}
 .chip-btn{border:0;cursor:pointer}
 .chip-btn:hover,.chip-btn.open{background:rgba(255,255,255,.18)}
-.mbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:-2px 0 14px;padding:10px 14px;border-radius:16px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);font-size:13px}
+.mbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:-2px 0 14px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);font-size:13px}
 .mbar p{margin:0;flex:1 1 220px}
 .mbar.warn{border-color:rgba(255,138,117,.45)}
 .mbar.pend{flex-direction:column;align-items:stretch}
@@ -380,7 +380,7 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .wf:hover{background:rgba(255,255,255,.12)}
 .wf.on{background:rgba(255,255,255,.9);color:#111114;border-color:transparent}
 .bento{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:212px;grid-auto-flow:dense;gap:16px}
-.wt{display:flex;flex-direction:column;overflow:hidden;min-width:0;border-radius:26px;background:var(--panel);border:1px solid var(--line)}
+.wt{display:flex;flex-direction:column;overflow:hidden;min-width:0;border-radius:20px;background:var(--panel);border:1px solid var(--line)}
 .wt.sq{grid-column:span 1}
 .wt.wide{grid-column:span 2}
 .wt.tall{grid-column:span 2;grid-row:span 2}
@@ -400,7 +400,8 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .wt-bar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,rgba(255,255,255,.5),#fff)}
 .wt-foot{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto;padding-top:8px}
 .wt-foot .btn{padding:6px 12px;font-size:12px}
-.works-empty{min-height:160px;justify-content:center}
+.app.proj-mode .works-empty,.works-empty{flex:none;min-height:140px;justify-content:center}
+.works-empty .note-empty{border-top:0;padding:0;text-align:center}
 @media (max-width:1100px){.bento{grid-template-columns:repeat(2,minmax(0,1fr))}.wt.sq{grid-column:span 1}}
 @media (max-width:620px){.bento{grid-template-columns:minmax(0,1fr);grid-auto-rows:auto}.wt.sq,.wt.wide,.wt.tall{grid-column:span 1;grid-row:span 1}.wt.tall .wt-vis{flex:none;height:220px}}
 
@@ -431,7 +432,7 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 @media (max-width:820px){.brand-btn{padding-bottom:14px;margin-bottom:12px}.snav{margin-bottom:10px}.pgroup{margin-left:0;padding-left:0;border-left:0}}
 
 /* ---------- done toggle ---------- */
-.done-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.08);cursor:pointer;position:relative}
+.done-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.08);cursor:pointer;position:relative}
 .done-row input{position:absolute;opacity:0;pointer-events:none}
 .done-row .sw{flex:none;width:36px;height:22px;border-radius:999px;background:rgba(255,255,255,.14);box-shadow:inset 0 1px 3px rgba(0,0,0,.35);position:relative;transition:background .25s}
 .done-row .sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#e9eae7;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:transform .25s cubic-bezier(.2,.7,.2,1)}
@@ -455,7 +456,7 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .work-card .wt-meta b{color:#fff}
 .work-card h2{font-size:26px}
 .work-card .lf small{font-size:11px;color:rgba(242,243,240,.45)}
-.work-card textarea{border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(0,0,0,.28);padding:11px 13px;font-size:14px;color:#F2F3F0;resize:vertical;line-height:1.6;box-shadow:inset 0 1px 3px rgba(0,0,0,.3)}
+.work-card textarea{border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(0,0,0,.28);padding:11px 13px;font-size:14px;color:#F2F3F0;resize:vertical;line-height:1.6;box-shadow:inset 0 1px 3px rgba(0,0,0,.3)}
 .work-card textarea:focus{outline:none;border-color:rgba(255,255,255,.4)}
 .work-card textarea.mono{font:12.5px/1.6 var(--f-mono)}
 .wk-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -465,9 +466,39 @@ button.d:not(.s):not(.e):hover span{background:var(--sunk);border-radius:50%}
 .work-card .btn.ghost{background:transparent;border-color:transparent}
 .work-card .btn.solid{background:rgba(255,255,255,.92);color:#111114;border-color:transparent}
 .work-card .btn.danger{color:#FFB4A6;border-color:rgba(255,138,117,.5)}
-.wv-vis{position:relative;height:min(52vh,420px);border-radius:18px;overflow:hidden;background:#0c0d0c;border:1px solid rgba(255,255,255,.1)}
+.wv-vis{position:relative;height:min(52vh,420px);border-radius:14px;overflow:hidden;background:#0c0d0c;border:1px solid rgba(255,255,255,.1)}
 .wv-vis iframe{position:absolute;left:0;top:0;width:1200px;border:0;transform-origin:0 0;background:#fff}
 .wv-vis.img img{width:100%;height:100%;object-fit:contain}
 .wv-detail{margin:0;font-size:14px;line-height:1.7;white-space:pre-wrap;color:rgba(242,243,240,.85)}
 .wv-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px}
 .wv-actions .sp{flex:1}
+
+/* ---------- popup close button: keep clear of tabs and titles ---------- */
+.login-card form > .segs:first-child{margin-right:40px}
+.login-card:has(> form > .segs:first-child) .login-x{top:32px}
+.login-card > h2,.login-card form > h2{padding-right:36px}
+.work-card > .wt-meta{padding-right:40px;min-height:32px}
+
+/* ---------- project delete (admin) ---------- */
+.phead .pdel{margin-left:auto;align-self:center;font-size:12px;color:var(--muted)}
+.app.proj-mode .phead .pdel:hover{color:var(--danger);background:rgba(255,138,117,.08)}
+.proj-del{margin:14px 0 0}
+
+/* ---------- result field: kind switch + link or one file ---------- */
+.rhead{display:flex;align-items:center;justify-content:space-between;gap:8px 10px;flex-wrap:wrap}
+.rlabel{font-size:12px;font-weight:500;color:var(--muted)}
+.rk{display:inline-flex;gap:2px;padding:3px;border-radius:999px;background:rgba(0,0,0,.24);box-shadow:inset 0 1px 3px rgba(0,0,0,.28)}
+.rk-b{border:0;background:transparent;color:var(--muted);border-radius:999px;padding:5px 11px;font:500 12px/1.2 var(--f-body);white-space:nowrap}
+.rk-b:hover{color:var(--ink)}
+.rk-b.on{background:rgba(255,255,255,.16);color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.22)}
+.rk-tag{font:500 11px/1 var(--f-body);color:var(--muted);padding:5px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.14)}
+.rfile{display:flex;align-items:center;gap:6px;padding:7px 7px 7px 13px;border-radius:10px;background:rgba(0,0,0,.24);border:1px solid rgba(255,255,255,.09);box-shadow:inset 0 1px 3px rgba(0,0,0,.28);min-width:0}
+.rf-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.rf-name{font-weight:500;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rf-txt small{font:11.5px/1.2 var(--f-mono);color:var(--muted)}
+.rfile .btn{flex:none}
+.rdrop{display:flex;flex-direction:column;align-items:center;gap:4px;padding:16px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);cursor:pointer;text-align:center;transition:background .2s,border-color .2s}
+.rdrop b{font-weight:500;font-size:14px}
+.rdrop small{font-size:11.5px;color:var(--muted)}
+.rdrop:hover,.rdrop.over{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.3)}
+.r-empty{margin:0;padding:10px 13px;border-radius:10px;background:rgba(0,0,0,.18);font-size:13px;color:var(--muted)}
