@@ -32,11 +32,11 @@ const resUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r) : null) : (r.da
 const dlUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r, true) : null) : (r.data || null);
 const fileSafe = n => String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80);
 
-let state = { members: [], projects: [], works: [] };
+let state = { members: [], projects: [], works: [], settings: { guestComments: true }, commentsReady: true };
 const auth = { user: null, me: null };
 const ui = { view:'home', pid:null, panel:null, tab:'plan', htmlView:'code', viewFile:null, viewData:null, pendingDel:null,
   worksBy:'all', work:null, memberMenu:null, confirmRemove:null, showPending:false, pendingNote:null, authTab:'login', authMsg:null, busy:false, loadError:null,
-  confirmProjDel:null, resDel:null };
+  confirmProjDel:null, resDel:null, cmOpen:{}, cmDel:null, cmDraft:{}, adm:null };
 
 /* ---------- permissions ---------- */
 const lv = () => auth.me ? (ROLE_LV[auth.me.role] || 0) : 0;
@@ -46,7 +46,8 @@ const can = {
   admin: () => lv() >= 3,
   entry: mid => lv() >= 3 || (lv() >= 1 && auth.me.id === mid),
   delNote: n => lv() >= 3 || (lv() >= 1 && n.by === auth.me.id),
-  editMember: m => !!(m && auth.me && m.id !== auth.me.id && lv() >= 3)
+  editMember: m => !!(m && auth.me && m.id !== auth.me.id && lv() >= 3),
+  delComment: c => lv() >= 3 || (lv() >= 1 && (c.by === auth.me.id || c.mid === auth.me.id))
 };
 const active = () => state.members.filter(m => m.role !== 'pending');
 const pendings = () => state.members.filter(m => m.role === 'pending');
@@ -107,7 +108,8 @@ const Local = {
     try { s = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
     if (!s) { try { s = migrate(JSON.parse(localStorage.getItem(OLD_KEY))); } catch (e) {} }
     if (!s || !Array.isArray(s.projects) || !s.projects.length || !Array.isArray(s.members)) s = demoSeed();
-    state = s; state.works = state.works || []; state.projects.forEach(p => { p.notes = p.notes || []; p.entries = p.entries || {}; });
+    state = s; state.works = state.works || []; state.settings = state.settings || { guestComments: true }; state.commentsReady = true;
+    state.projects.forEach(p => { p.notes = p.notes || []; p.entries = p.entries || {}; p.comments = p.comments || []; });
     try { this.demoAs = localStorage.getItem(KEY + ':as') || 'admin'; } catch (e) {}
     this.applyDemo();
   },
@@ -120,7 +122,10 @@ const Local = {
   setDemo(who) { this.demoAs = who; try { localStorage.setItem(KEY + ':as', who); } catch (e) {} this.applyDemo(); },
   persist() { try { localStorage.setItem(KEY, JSON.stringify(state)); setSave('ok'); } catch (e) { setSave('err', e); } },
   async reload() {},
-  async createProject(no) { const np = { id: uid(), no, sub:'', start:'', end:'', entries:{}, notes:[] }; state.projects.push(np); this.persist(); return np; },
+  async createProject(no) { const np = { id: uid(), no, sub:'', start:'', end:'', entries:{}, notes:[], comments:[] }; state.projects.push(np); this.persist(); return np; },
+  async addComment(p, mid, text, guest) { p.comments.push({ id: uid(), mid, by: guest ? null : auth.me.id, guest: guest || null, text, at: Date.now() }); this.persist(); },
+  async delComment(p, id) { p.comments = p.comments.filter(c => c.id !== id); this.persist(); },
+  async setGuestComments(on) { state.settings.guestComments = on; this.persist(); },
   async deleteProject(p) { state.projects = state.projects.filter(x => x.id !== p.id); this.persist(); },
   async updateProject(p) { this.persist(); },
   async setResult(p, mid, f) {
@@ -141,7 +146,7 @@ const Local = {
   async delFile(p, mid, rec) { const e = ent(p, mid); e.files = e.files.filter(f => f.id !== rec.id); this.persist(); },
   async fileContent(rec) { return rec.data; },
   async setRole(m, role) { m.role = role; this.persist(); },
-  async removeMember(m) { state.members = state.members.filter(x => x.id !== m.id); state.projects.forEach(p => delete p.entries[m.id]); state.works = state.works.filter(w => w.by !== m.id); this.persist(); },
+  async removeMember(m) { state.members = state.members.filter(x => x.id !== m.id); state.projects.forEach(p => { delete p.entries[m.id]; p.comments = (p.comments || []).filter(c => c.mid !== m.id && c.by !== m.id); }); state.works = state.works.filter(w => w.by !== m.id); this.persist(); },
   async saveWork(prev, data, opt) {
     let image = prev ? prev.image : null;
     if (opt.removeImg) image = null;
@@ -180,18 +185,24 @@ const Live = {
       sb.from('vft_entries').select('*'),
       sb.from('vft_notes').select('*').order('created_at', { ascending: false }),
       sb.from('vft_files').select('*').order('created_at', { ascending: false }),
-      sb.from('vft_works').select('*').order('created_at', { ascending: false })
+      sb.from('vft_works').select('*').order('created_at', { ascending: false }),
+      sb.from('vft_comments').select('*').order('created_at'),
+      sb.from('vft_settings').select('guest_comments').eq('id', 1).maybeSingle()
     ]);
-    const bad = res.find(r => r.error); if (bad) throw bad.error;
-    const [m, p, e, n, f, wk] = res.map(r => r.data);
-    state.members = m.map(x => ({ id: x.id, name: x.name, role: x.role, userId: x.user_id }));
-    state.projects = p.map(x => ({ id: x.id, no: x.no, sub: x.subtitle || '', start: x.start_date || '', end: x.end_date || '', entries: {}, notes: [] }));
+    // 댓글·설정 표는 나중에 추가된 것이라, 아직 SQL을 실행하지 않았어도 나머지는 정상으로 보이게 합니다
+    const bad = res.slice(0, 6).find(r => r.error); if (bad) throw bad.error;
+    const [m, p, e, n, f, wk] = res.map(r => r.data), cm = res[6], st = res[7];
+    state.members = m.map(x => ({ id: x.id, name: x.name, role: x.role, userId: x.user_id, at: Date.parse(x.created_at) }));
+    state.projects = p.map(x => ({ id: x.id, no: x.no, sub: x.subtitle || '', start: x.start_date || '', end: x.end_date || '', entries: {}, notes: [], comments: [] }));
     const byId = Object.fromEntries(state.projects.map(x => [x.id, x]));
     e.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.entries[x.member_id] = { title: x.title, topic: x.topic, detail: x.detail, url: x.url, plan: x.plan, html: x.html, progress: x.progress, done: !!x.done, files: [],
       result_kind: x.result_kind || 'web', res: x.result_path ? { path: x.result_path, name: x.result_name || '결과물', size: +x.result_size || 0 } : null }; });
     n.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.notes.push({ id: x.id, text: x.body, by: x.author_id, at: Date.parse(x.created_at) }); });
     f.forEach(x => { const pr = byId[x.project_id]; if (pr) ent(pr, x.member_id).files.push({ id: x.id, name: x.name, size: x.size, type: x.mime, added: Date.parse(x.created_at), path: x.path, kind: kindOf(x.name, x.mime) }); });
     state.works = wk.map(x => ({ id: x.id, by: x.member_id, title: x.title, topic: x.topic, detail: x.detail, url: x.url, html: x.html, image: x.image_path, at: Date.parse(x.created_at) }));
+    state.commentsReady = !cm.error;
+    if (!cm.error) cm.data.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.comments.push({ id: x.id, mid: x.member_id, by: x.author_id, guest: x.guest_name, text: x.body, at: Date.parse(x.created_at) }); });
+    state.settings = { guestComments: st.error || !st.data ? true : !!st.data.guest_comments };
     auth.me = auth.user ? state.members.find(x => x.userId === auth.user.id) || null : null;
   },
   imgUrl(path) { return sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl; },
@@ -225,7 +236,22 @@ const Live = {
   },
   async createProject(no) {
     const { data, error } = await sb.from('vft_projects').insert({ no }).select().single(); if (error) throw error;
-    const np = { id: data.id, no: data.no, sub: '', start: '', end: '', entries: {}, notes: [] }; state.projects.push(np); return np;
+    const np = { id: data.id, no: data.no, sub: '', start: '', end: '', entries: {}, notes: [], comments: [] }; state.projects.push(np); return np;
+  },
+  async addComment(p, mid, text, guest) {
+    const row = guest ? { project_id: p.id, member_id: mid, guest_name: guest, body: text } : { project_id: p.id, member_id: mid, author_id: auth.me.id, body: text };
+    const { data, error } = await sb.from('vft_comments').insert(row).select().single(); if (error) throw error;
+    p.comments.push({ id: data.id, mid: data.member_id, by: data.author_id, guest: data.guest_name, text: data.body, at: Date.parse(data.created_at) });
+  },
+  async delComment(p, id) {
+    const { data, error } = await sb.from('vft_comments').delete().eq('id', id).select('id'); if (error) throw error;
+    if (!data.length) throw new Error('권한이 없습니다.');
+    p.comments = p.comments.filter(c => c.id !== id);
+  },
+  async setGuestComments(on) {
+    const { data, error } = await sb.from('vft_settings').update({ guest_comments: on, updated_at: new Date().toISOString() }).eq('id', 1).select('guest_comments'); if (error) throw error;
+    if (!data.length) throw new Error('권한이 없습니다.');
+    state.settings.guestComments = on;
   },
   async deleteProject(p) {
     // 표에서 먼저 지우고(칸·노트·파일 목록은 함께 지워짐), 성공하면 저장소의 실제 파일을 정리합니다
@@ -303,7 +329,7 @@ const Live = {
   async removeMember(m) {
     const { data, error } = await sb.from('vft_members').delete().eq('id', m.id).select('id'); if (error) throw error;
     if (!data.length) throw new Error('권한이 없습니다.');
-    state.members = state.members.filter(x => x.id !== m.id); state.projects.forEach(p => delete p.entries[m.id]); state.works = state.works.filter(w => w.by !== m.id);
+    state.members = state.members.filter(x => x.id !== m.id); state.projects.forEach(p => { delete p.entries[m.id]; p.comments = p.comments.filter(c => c.mid !== m.id && c.by !== m.id); }); state.works = state.works.filter(w => w.by !== m.id);
   }
 };
 const Store = LIVE ? Live : Local;
@@ -313,7 +339,7 @@ async function refresh() {
   try { await Live.reload(); ui.loadError = null; } catch (e) { console.error(e); ui.loadError = friendly(e); }
   if (ui.view === 'project' && !state.projects.some(p => p.id === ui.pid)) ui.view = 'home';
   if (!active().some(m => m.id === ui.worksBy)) ui.worksBy = 'all';
-  renderSidebar(); if (ui.view !== 'home') renderMain(); renderAuthButtons(); setSave('idle');
+  renderSidebar(); if (ui.view !== 'home') renderMain(); renderAuthButtons(); setSave('idle'); renderAdmin();
   const modal = document.getElementById('login'); if (modal && !modal.hidden) renderAuth();
 }
 
@@ -557,39 +583,51 @@ function renderBoard(p) { document.getElementById('board').innerHTML = boardHTML
 
 function chipTag(m) { return m.role === 'admin' ? '<em>관리자</em>' : m.role === 'manager' ? '<em>매니저</em>' : ''; }
 function membersHTML() {
-  const chips = active().map(m => {
-    const menu = can.editMember(m) || (can.admin() && m.id !== (auth.me && auth.me.id));
-    const me = auth.me && auth.me.id === m.id ? ' me' : '';
-    return menu
-      ? `<button class="chip chip-btn${me}${ui.memberMenu === m.id ? ' open' : ''}" data-act="member-menu" data-m="${m.id}" aria-expanded="${ui.memberMenu === m.id}"><i></i>${esc(m.name)}${chipTag(m)}</button>`
-      : `<span class="chip${me}"><i></i>${esc(m.name)}${chipTag(m)}</span>`;
+  const chips = active().map(m => `<span class="chip${auth.me && auth.me.id === m.id ? ' me' : ''}"><i></i>${esc(m.name)}${chipTag(m)}</span>`).join('');
+  return `<div class="chips">${chips}</div>`;
+}
+
+/* ---------- admin menu (관리자 설정) ---------- */
+function openAdmin() { if (!can.admin()) return; ui.adm = { rm: null, proj: null }; document.getElementById('adminmodal').hidden = false; renderAdmin(); }
+function closeAdmin() { document.getElementById('adminmodal').hidden = true; ui.adm = null; }
+function adminOpen() { const el = document.getElementById('adminmodal'); return el && !el.hidden; }
+function renderAdmin() {
+  if (!adminOpen()) return;
+  if (!can.admin()) { closeAdmin(); return; }
+  const st = ui.adm || (ui.adm = { rm: null, proj: null }), card = document.getElementById('admincard');
+  const on = !!state.settings.guestComments, pend = pendings(), mems = active();
+  const guest = state.commentsReady ? `<label class="done-row adm-row${on ? ' on' : ''}"><input type="checkbox" id="adm-guest"${on ? ' checked' : ''}>
+      <span class="sw" aria-hidden="true"></span><span class="dt"><b>${on ? '방문자 댓글 켜짐' : '방문자 댓글 꺼짐'}</b>
+      <small>${on ? '로그인하지 않은 사람도 이름을 적고 댓글을 달 수 있습니다' : '로그인한 멤버만 댓글을 쓸 수 있습니다. 이미 달린 방문자 댓글은 그대로 보입니다'}</small></span></label>`
+    : '<p class="adm-none">댓글 기능을 쓰려면 Supabase에서 댓글용 SQL을 먼저 실행해 주세요.</p>';
+  const pendRows = pend.length ? pend.map(x => `<li class="adm-item"><span class="adm-name">${esc(x.name)}</span>
+      <span class="adm-sub">${x.at ? fmtDate(x.at) + ' 신청' : '승인 대기'}</span>
+      <span class="adm-btns"><button class="btn solid" data-act="approve" data-m="${x.id}">승인</button><button class="btn ghost" data-act="reject" data-m="${x.id}">거절</button></span></li>`).join('')
+    : '<li class="adm-none">대기 중인 신청이 없습니다</li>';
+  const memRows = mems.map(x => {
+    const self = auth.me && x.id === auth.me.id;
+    if (st.rm === x.id) return `<li class="adm-item warn"><p>${esc(x.name)}을(를) 빼면 모든 프로젝트의 ${esc(x.name)} 칸 내용, 결과물, 파일, 댓글이 함께 지워집니다. 되돌릴 수 없습니다.</p>
+      <span class="adm-btns"><button class="btn danger" data-act="remove-member" data-m="${x.id}">빼기</button><button class="btn ghost" data-act="adm-cancel">취소</button></span></li>`;
+    const btns = self || x.role === 'admin' ? '' : `<button class="btn" data-act="set-role" data-m="${x.id}" data-role="${x.role === 'manager' ? 'member' : 'manager'}">${x.role === 'manager' ? '매니저 해제' : '매니저로 지정'}</button>
+      <button class="btn ghost" data-act="ask-remove" data-m="${x.id}">빼기</button>`;
+    return `<li class="adm-item"><span class="adm-name">${esc(x.name)}</span><span class="adm-role r-${x.role}">${ROLE_KO[x.role]}${self ? ' · 나' : ''}</span><span class="adm-btns">${btns}</span></li>`;
   }).join('');
-  const n = pendings().length;
-  const pend = can.admin() && n ? `<button class="btn" data-act="toggle-pending" aria-expanded="${ui.showPending}">가입 신청 ${n}</button>` : '';
-  return `<div class="chips">${chips}${pend}</div>`;
+  const projs = [...state.projects].sort((a, b) => a.no - b.no);
+  const projRows = projs.length ? projs.map(x => st.proj === x.id
+    ? `<li class="adm-item warn"><p><b>Project ${x.no}</b>${x.sub ? ` (${esc(x.sub)})` : ''}의 모든 칸 내용, 결과물, 노트, 댓글, 파일이 함께 지워집니다. 되돌릴 수 없습니다.</p>
+      <span class="adm-btns"><button class="btn danger" data-act="adm-del-proj" data-id="${x.id}">삭제</button><button class="btn ghost" data-act="adm-cancel">취소</button></span></li>`
+    : `<li class="adm-item"><span class="adm-name">Project ${x.no}</span><span class="adm-sub">${x.sub ? esc(x.sub) : '부제 없음'}</span>
+      <span class="adm-btns"><button class="btn ghost" data-act="adm-ask-proj" data-id="${x.id}">삭제</button></span></li>`).join('')
+    : '<li class="adm-none">프로젝트가 없습니다</li>';
+  card.innerHTML = `<button class="login-x" type="button" data-act="close-admin" aria-label="닫기">×</button>
+    <h2>관리자 설정</h2>
+    <p class="login-sub">관리자만 볼 수 있는 메뉴입니다.</p>
+    <section class="adm-sec"><h3>방문자 댓글</h3>${guest}</section>
+    <section class="adm-sec"><h3>가입 신청${pend.length ? `<small>${pend.length}</small>` : ''}</h3><ul class="adm-list">${pendRows}</ul></section>
+    <section class="adm-sec"><h3>멤버<small>${mems.length}</small></h3><ul class="adm-list">${memRows}</ul></section>
+    <section class="adm-sec"><h3>프로젝트<small>${projs.length}</small></h3><ul class="adm-list">${projRows}</ul></section>`;
 }
-function memberBarHTML() {
-  let out = '';
-  const m = state.members.find(x => x.id === ui.memberMenu);
-  if (m && m.role !== 'pending') {
-    if (ui.confirmRemove === m.id) {
-      out += `<div class="mbar warn" role="alert"><p>${esc(m.name)}을(를) 멤버에서 빼면 모든 프로젝트의 ${esc(m.name)} 칸 내용과 파일도 함께 지워집니다.</p>
-        <button class="btn danger" data-act="remove-member" data-m="${m.id}">멤버에서 빼기</button><button class="btn ghost" data-act="member-menu" data-m="${m.id}">취소</button></div>`;
-    } else {
-      const btns = [];
-      if (can.admin() && m.role !== 'admin') btns.push(`<button class="btn" data-act="set-role" data-m="${m.id}" data-role="${m.role === 'manager' ? 'member' : 'manager'}">${m.role === 'manager' ? '매니저 해제' : '매니저로 지정'}</button>`);
-      if (can.editMember(m)) btns.push(`<button class="btn ghost" data-act="ask-remove" data-m="${m.id}">멤버에서 빼기</button>`);
-      out += `<div class="mbar"><p><b>${esc(m.name)}</b> · ${ROLE_KO[m.role]}</p>${btns.join('')}<button class="btn ghost" data-act="member-menu" data-m="${m.id}">닫기</button></div>`;
-    }
-  }
-  if (ui.showPending && can.admin()) {
-    const rows = pendings().map(x => `<li><span>${esc(x.name)}</span>
-      <button class="btn solid" data-act="approve" data-m="${x.id}">승인</button>
-      <button class="btn ghost" data-act="reject" data-m="${x.id}">거절</button></li>`).join('');
-    out += `<div class="mbar pend"><p>가입 신청</p><ul>${rows || '<li class="none">대기 중인 신청이 없습니다</li>'}</ul></div>`;
-  }
-  return out;
-}
+function afterAdmin() { renderSidebar(); renderAuthButtons(); if (ui.view !== 'home') renderMain(); renderAdmin(); }
 
 const RK_HINT = { web: '배포한 웹앱 주소', link: 'GitHub, 노션, 영상 등의 주소', program: '실행 파일, 압축 파일, 코드 파일', file: '이미지, PDF, 문서, 영상 등' };
 function resultHTML(m, e, id, edit, okUrl) {
@@ -623,6 +661,80 @@ function resultHTML(m, e, id, edit, okUrl) {
   }
   return `<div class="fld rfld"><div class="rhead"><span class="rlabel">결과물</span>${kinds}</div>${body}</div>`;
 }
+/* ---------- comments under each member card ---------- */
+const CM_SHOW = 3, GUEST_KEY = 'vft-guest-name';
+const cmKey = (p, m) => `${p.id}-${m.id}`;
+function guestNameSaved() { try { return localStorage.getItem(GUEST_KEY) || ''; } catch (e) { return ''; } }
+function commentsHTML(p, m) {
+  if (!state.commentsReady) return '';
+  const key = cmKey(p, m), list = (p.comments || []).filter(c => c.mid === m.id);
+  const open = !!ui.cmOpen[key], hidden = open ? 0 : Math.max(0, list.length - CM_SHOW);
+  const shown = list.slice(hidden), draft = ui.cmDraft[key] || {};
+  const rows = shown.map(c => {
+    const who = c.guest ? `<b>${esc(c.guest)}</b><em>방문자</em>` : `<b>${esc(noteName(c.by))}</b>`;
+    const del = !auth.me || !can.delComment(c) ? '' : ui.cmDel === c.id
+      ? `<button class="nbtn danger" data-act="cm-del" data-id="${c.id}">한 번 더 누르면 삭제</button>`
+      : `<button class="nbtn" data-act="cm-del" data-id="${c.id}" aria-label="댓글 삭제">삭제</button>`;
+    return `<li class="cm"><div class="cm-meta">${who}<span>${fmtDate(c.at)}</span>${del}</div><p>${esc(c.text)}</p></li>`;
+  }).join('');
+  const more = list.length > CM_SHOW
+    ? `<button class="cm-more" data-act="cm-more" data-m="${m.id}">${open ? '최근 댓글만 보기' : `이전 댓글 ${hidden}개 더 보기`}</button>` : '';
+  const member = can.write();
+  let form;
+  if (!member && !state.settings.guestComments) form = '<p class="note-lock">로그인한 멤버만 댓글을 쓸 수 있습니다.</p>';
+  else form = `<form class="cm-form" data-p="${p.id}" data-m="${m.id}" novalidate>
+      ${member ? '' : `<input class="cm-name" maxlength="10" autocomplete="nickname" placeholder="이름 (10자까지)" aria-label="이름" value="${esc(draft.name != null ? draft.name : guestNameSaved())}">`}
+      <textarea class="cm-text auto" rows="1" maxlength="500" placeholder="${esc(m.name)}의 작업에 댓글 남기기" aria-label="댓글">${esc(draft.text || '')}</textarea>
+      <div class="cm-actions"><span class="cm-as">${member ? `${esc(auth.me.name)}(으)로 남깁니다` : '방문자로 남깁니다'}</span><span class="cm-count">${(draft.text || '').length}/500</span>
+        <button class="btn solid" type="submit">등록</button></div>
+      <p class="err-text cm-err" hidden></p></form>`;
+  return `<section class="cmts" id="cm-${key}" aria-label="${esc(m.name)} 칸 댓글">
+    <div class="cm-head">댓글${list.length ? `<small>${list.length}</small>` : ''}</div>
+    ${more}${rows ? `<ul class="cm-list">${rows}</ul>` : ''}${form}</section>`;
+}
+function renderComments(p, m) {
+  const el = document.getElementById('cm-' + cmKey(p, m)); if (!el) return;
+  el.outerHTML = commentsHTML(p, m); fitAuto(document.getElementById('cm-' + cmKey(p, m)));
+}
+async function submitComment(form) {
+  const p = state.projects.find(x => x.id === form.dataset.p), m = state.members.find(x => x.id === form.dataset.m); if (!p || !m) return;
+  const err = form.querySelector('.cm-err'), say = t => { err.textContent = t; err.hidden = false; };
+  const ta = form.querySelector('.cm-text'), text = ta.value.trim();
+  const nameEl = form.querySelector('.cm-name'), guest = nameEl ? nameEl.value.trim() : null;
+  if (nameEl) {
+    if (!guest) { nameEl.focus(); return say('이름을 적어 주세요'); }
+    if (state.members.some(x => x.name.toLowerCase() === guest.toLowerCase())) { nameEl.focus(); return say('멤버 닉네임과 같은 이름은 쓸 수 없습니다. 다른 이름을 적어 주세요.'); }
+  }
+  if (!text) { ta.focus(); return say('댓글 내용을 적어 주세요'); }
+  try { await Store.addComment(p, m.id, text, guest); }
+  catch (e) {
+    console.error(e);
+    if (guest && /row-level security|permission|42501/i.test(e.message || '')) {
+      // 방문자 댓글이 방금 꺼졌거나, 이름이 멤버(승인 대기 포함)와 겹치는 경우
+      const key = cmKey(p, m); ui.cmDraft[key] = { name: guest, text };
+      await refresh();
+      const f = document.querySelector(`#cm-${key} .cm-err`);
+      if (state.settings.guestComments && f) { f.textContent = '이 이름으로는 댓글을 달 수 없습니다. 다른 이름을 적어 주세요.'; f.hidden = false; }
+      else toast('지금은 로그인한 멤버만 댓글을 쓸 수 있습니다');
+      return;
+    }
+    return say(friendly(e));
+  }
+  if (guest) { try { localStorage.setItem(GUEST_KEY, guest); } catch (e) {} }
+  const key = cmKey(p, m); ui.cmDraft[key] = { name: guest }; ui.cmOpen[key] = ui.cmOpen[key] || false;
+  renderComments(p, m); toast('댓글을 남겼습니다');
+}
+/* textareas that grow with their text (주제, 상세 내용, 댓글) */
+function autoSize(el, growOnly) {
+  const extra = el.offsetHeight - el.clientHeight;
+  if (!growOnly) el.style.height = 'auto';
+  const want = el.scrollHeight + extra;
+  if (!growOnly || want > el.offsetHeight) el.style.height = want + 'px';
+}
+function fitAuto(root) { (root || document).querySelectorAll('textarea.auto').forEach(el => autoSize(el)); }
+let autoW = 0, autoT;
+window.addEventListener('resize', () => { clearTimeout(autoT); autoT = setTimeout(() => { if (innerWidth !== autoW) { autoW = innerWidth; fitAuto(); } }, 120); });
+
 function cardHTML(p, m) {
   const e = ent(p, m.id), open = ui.panel === m.id, id = `${p.id}-${m.id}`, edit = can.entry(m.id);
   const ro = edit ? '' : ' readonly', dis = edit ? '' : ' disabled';
@@ -639,14 +751,14 @@ function cardHTML(p, m) {
     <div class="pbar" aria-hidden="true"><i id="pb-${id}" style="width:${+e.progress || 0}%"></i></div>
     <div class="card-b">
       <label class="fld"><span>프로젝트 제목</span><input id="t-${id}" data-bind="entry" data-m="${m.id}" data-f="title" value="${esc(e.title)}" placeholder="${edit ? '결과물의 이름' : ''}"${ro}></label>
-      <label class="fld"><span>주제</span><input id="p-${id}" data-bind="entry" data-m="${m.id}" data-f="topic" value="${esc(e.topic)}" placeholder="${edit ? '무엇을 만드는지 한 줄로' : ''}"${ro}></label>
-      <label class="fld"><span>상세 내용</span><textarea id="d-${id}" rows="5" data-bind="entry" data-m="${m.id}" data-f="detail" placeholder="${edit ? '기능, 진행 상황, 막힌 점 등' : ''}"${ro}>${esc(e.detail)}</textarea></label>
+      <label class="fld"><span>주제</span><textarea id="p-${id}" class="auto" rows="1" data-bind="entry" data-m="${m.id}" data-f="topic" placeholder="${edit ? '무엇을 만드는지 간단히' : ''}"${ro}>${esc(e.topic)}</textarea></label>
+      <label class="fld"><span>상세 내용</span><textarea id="d-${id}" class="auto" rows="5" data-bind="entry" data-m="${m.id}" data-f="detail" placeholder="${edit ? '기능, 진행 상황, 막힌 점 등' : ''}"${ro}>${esc(e.detail)}</textarea></label>
       ${resultHTML(m, e, id, edit, okUrl)}
       <label class="done-row${e.done ? ' on' : ''}"><input type="checkbox" id="dn-${id}" data-bind="entry" data-m="${m.id}" data-f="done"${e.done ? ' checked' : ''}${dis}>
         <span class="sw" aria-hidden="true"></span><span class="dt"><b>${e.done ? '작업 완료' : '작업 완료로 표시'}</b><small>${e.done ? 'Works에 공개되어 있습니다' : '완료하면 Works에 모입니다'}</small></span></label>
       <button class="ws-btn" data-act="toggle-panel" data-m="${m.id}" aria-expanded="${open}">
         <span>작업 자료 · 기획 / HTML / 파일</span><small>${open ? '닫기' : `${hasPlan + hasHtml + nFiles}개`}</small></button>
-    </div></article>`;
+    </div>${commentsHTML(p, m)}</article>`;
 }
 
 function panelHTML(p) {
@@ -862,8 +974,14 @@ function renderAuthButtons() {
   const top = document.querySelector('.login-top'), side = document.querySelector('.login-side'), who = document.getElementById('whoami');
   top.textContent = auth.me ? auth.me.name : auth.user && LIVE ? '계정' : '로그인'; top.classList.toggle('signed', !!auth.user);
   side.textContent = auth.user ? '로그아웃' : '로그인'; side.dataset.act = auth.user ? 'logout' : 'open-login';
-  who.textContent = auth.me ? `${auth.me.name} · ${ROLE_KO[auth.me.role]}` : auth.user && LIVE ? (auth.user.email || '') : '';
-  who.hidden = !who.textContent;
+  const label = auth.me ? `${auth.me.name} · ${ROLE_KO[auth.me.role]}` : auth.user && LIVE ? (auth.user.email || '') : '';
+  const isAdm = can.admin(), n = pendings().length;
+  who.innerHTML = !label ? '' : isAdm
+    ? `<span>${esc(label)}</span>${n ? `<em class="adm-badge" title="가입 신청 ${n}건">신청 ${n}</em>` : ''}<span class="adm-go" aria-hidden="true">설정 ›</span>`
+    : `<span>${esc(label)}</span>`;
+  who.classList.toggle('is-admin', isAdm); who.disabled = !isAdm;
+  if (isAdm) { who.dataset.act = 'open-admin'; who.setAttribute('aria-label', `${label}, 관리자 설정 열기`); } else { delete who.dataset.act; who.removeAttribute('aria-label'); }
+  who.hidden = !label;
 }
 function renderMain() {
   const main = document.getElementById('main');
@@ -888,11 +1006,7 @@ function renderMain() {
       <h1 class="ptitle">Project ${p.no}</h1>
       ${subEdit ? `<input class="subinput" id="sub-${p.id}" data-bind="sub" value="${esc(p.sub)}" placeholder="부제 입력" aria-label="Project ${p.no} 부제">`
         : `<p class="subtext">${esc(p.sub)}</p>`}
-      ${can.admin() && ui.confirmProjDel !== p.id ? `<button class="btn ghost pdel" data-act="ask-del-proj">프로젝트 삭제</button>` : ''}
     </header>
-    ${can.admin() && ui.confirmProjDel === p.id ? `<div class="mbar warn proj-del" role="alert">
-      <p><b>Project ${p.no}</b>${p.sub ? ` (${esc(p.sub)})` : ''}을(를) 지우면 이 프로젝트의 모든 칸 내용, 결과물, 노트, 파일이 함께 지워집니다. 되돌릴 수 없습니다.</p>
-      <button class="btn danger" data-act="del-proj">삭제</button><button class="btn ghost" data-act="cancel-del-proj">취소</button></div>` : ''}
     <div class="top-row">
       <section class="tr"><div class="period lg">
         <div id="cal">${calHTML(p)}</div>
@@ -901,16 +1015,17 @@ function renderMain() {
       <section class="tr"><div class="board lg" id="board">${boardHTML(p)}</div></section>
     </div>
     <section>
-      <div class="section-label members-bar">${membersHTML()}</div>${memberBarHTML()}
+      <div class="section-label members-bar">${membersHTML()}</div>
       <div class="cards">${active().map(m => cardHTML(p, m)).join('') || '<p class="note-empty">아직 승인된 멤버가 없습니다.</p>'}</div>
     </section>
     ${ui.panel ? panelHTML(p) : ''}
     <p class="credit credit-page">Designed and built by Rain</p>`;
   document.getElementById('cal').classList.toggle('picking', !!picking(p));
+  fitAuto(main);
   if (ui.panel && ui.tab === 'html' && ui.htmlView === 'preview') { const f = document.getElementById('pv'); if (f) f.srcdoc = ent(p, ui.panel).html; }
   bindDrop();
 }
-function render() { renderSidebar(); renderMain(); renderAuthButtons(); setSave('idle'); }
+function render() { renderSidebar(); renderMain(); renderAuthButtons(); setSave('idle'); renderAdmin(); }
 
 /* ---------- auth dialog ---------- */
 function openAuth() { ui.authMsg = null; ui.authTab = 'login'; document.getElementById('login').hidden = false; renderAuth(); }
@@ -1101,11 +1216,15 @@ document.addEventListener('click', ev => {
     const np = await Store.createProject(no); openProject(np.id);
     const s = document.getElementById('sub-' + np.id); if (s) s.focus();
   });
-  else if (a === 'ask-del-proj') { if (!can.admin()) return; ui.confirmProjDel = p.id; renderMain(); }
-  else if (a === 'cancel-del-proj') { ui.confirmProjDel = null; renderMain(); }
-  else if (a === 'del-proj') guarded(async () => {
-    if (!can.admin() || ui.confirmProjDel !== p.id) return;
-    await Store.deleteProject(p); ui.confirmProjDel = null; goHome(); toast(`Project ${p.no}을(를) 지웠습니다`);
+  else if (a === 'open-admin') openAdmin();
+  else if (a === 'close-admin') closeAdmin();
+  else if (a === 'adm-cancel') { if (ui.adm) { ui.adm.rm = null; ui.adm.proj = null; } renderAdmin(); }
+  else if (a === 'adm-ask-proj') { if (!can.admin() || !ui.adm) return; ui.adm.proj = b.dataset.id; ui.adm.rm = null; renderAdmin(); }
+  else if (a === 'adm-del-proj') guarded(async () => {
+    const x = state.projects.find(y => y.id === b.dataset.id); if (!can.admin() || !x || !ui.adm || ui.adm.proj !== x.id) return;
+    await Store.deleteProject(x); ui.adm.proj = null;
+    if (ui.view === 'project' && ui.pid === x.id) goHome();
+    afterAdmin(); toast(`Project ${x.no}을(를) 지웠습니다`);
   });
   else if (a === 'rkind') {
     const mid = b.dataset.m, k = b.dataset.k; if (!can.entry(mid) || !RK[k]) return;
@@ -1117,19 +1236,17 @@ document.addEventListener('click', ev => {
     if (ui.resDel !== mid) { ui.resDel = mid; renderMain(); return; }
     guarded(async () => { setSave('saving'); await Store.setResult(p, mid, null); ui.resDel = null; setSave('ok'); renderMain(); renderSidebar(); toast('결과물 파일을 지웠습니다'); });
   }
-  else if (a === 'member-menu') { const id = b.dataset.m; ui.memberMenu = ui.memberMenu === id && !ui.confirmRemove ? null : id; ui.confirmRemove = null; renderMain(); }
-  else if (a === 'ask-remove') { ui.confirmRemove = b.dataset.m; renderMain(); }
+  else if (a === 'ask-remove') { if (!can.admin() || !ui.adm) return; ui.adm.rm = b.dataset.m; ui.adm.proj = null; renderAdmin(); }
   else if (a === 'remove-member') guarded(async () => {
-    const m = state.members.find(x => x.id === b.dataset.m); if (!m) return;
-    await Store.removeMember(m); if (ui.panel === m.id) ui.panel = null; ui.memberMenu = null; ui.confirmRemove = null; renderMain(); toast(`${m.name}을(를) 멤버에서 뺐습니다`);
+    const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.editMember(m) || !ui.adm || ui.adm.rm !== m.id) return;
+    await Store.removeMember(m); if (ui.panel === m.id) ui.panel = null; ui.adm.rm = null; afterAdmin(); toast(`${m.name}을(를) 멤버에서 뺐습니다`);
   });
   else if (a === 'set-role') guarded(async () => {
-    const m = state.members.find(x => x.id === b.dataset.m); if (!m) return;
-    await Store.setRole(m, b.dataset.role); renderMain(); toast(b.dataset.role === 'manager' ? `${m.name}을(를) 매니저로 지정했습니다` : `${m.name}의 매니저 권한을 해제했습니다`);
+    const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.admin()) return;
+    await Store.setRole(m, b.dataset.role); afterAdmin(); toast(b.dataset.role === 'manager' ? `${m.name}을(를) 매니저로 지정했습니다` : `${m.name}의 매니저 권한을 해제했습니다`);
   });
-  else if (a === 'toggle-pending') { ui.showPending = !ui.showPending; renderMain(); }
-  else if (a === 'approve') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); await Store.setRole(m, 'member'); renderMain(); toast(`${m.name}의 가입을 승인했습니다`); });
-  else if (a === 'reject') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); await Store.removeMember(m); renderMain(); toast(`${m.name}의 신청을 거절했습니다`); });
+  else if (a === 'approve') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.admin()) return; await Store.setRole(m, 'member'); afterAdmin(); toast(`${m.name}의 가입을 승인했습니다`); });
+  else if (a === 'reject') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.admin()) return; await Store.removeMember(m); afterAdmin(); toast(`${m.name}의 신청을 거절했습니다`); });
   else if (a === 'copy-url') { const i = document.getElementById(b.dataset.target); if (!i.value.trim()) { toast('주소가 비어 있습니다'); return; } copyText(i.value.trim(), i); }
   else if (a === 'dl-html') {
     const m = state.members.find(x => x.id === b.dataset.m), e = ent(p, b.dataset.m); if (!e.html.trim()) { toast('내려받을 HTML이 없습니다'); return; }
@@ -1139,6 +1256,13 @@ document.addEventListener('click', ev => {
   else if (a === 'dl-file') {
     const rec = ent(p, b.dataset.m).files.find(f => f.id === b.dataset.id); if (!rec || !rec.data) return;
     if (rec.kind === 'image') saveUrl(rec.name, rec.data); else saveText(rec.name, rec.data, rec.type || 'text/plain');
+  }
+  else if (a === 'cm-more') { const m = state.members.find(x => x.id === b.dataset.m); if (!m) return; const k = cmKey(p, m); ui.cmOpen[k] = !ui.cmOpen[k]; renderComments(p, m); }
+  else if (a === 'cm-del') {
+    const id = b.dataset.id, c = (p.comments || []).find(x => x.id === id); if (!c || !can.delComment(c)) return;
+    const m = state.members.find(x => x.id === c.mid);
+    if (ui.cmDel !== id) { ui.cmDel = id; renderComments(p, m); return; }
+    guarded(async () => { await Store.delComment(p, id); ui.cmDel = null; renderComments(p, m); toast('댓글을 지웠습니다'); });
   }
   else if (a === 'copy-html') { const h = ent(p, b.dataset.m).html; if (!h.trim()) { toast('복사할 HTML이 없습니다'); return; } copyText(h, document.querySelector('.code')); }
   else if (a === 'toggle-panel') {
@@ -1180,6 +1304,7 @@ function submitNote() {
   guarded(async () => { await Store.addNote(p, text); ui.pendingNote = null; renderBoard(p); });
 }
 document.addEventListener('submit', ev => {
+  if (ev.target.classList && ev.target.classList.contains('cm-form')) { ev.preventDefault(); const f = ev.target; guarded(() => submitComment(f)); return; }
   const id = ev.target.id; if (!['noteform', 'loginform', 'signupform', 'joinform', 'workform'].includes(id)) return;
   ev.preventDefault();
   if (id === 'noteform') submitNote();
@@ -1189,13 +1314,20 @@ document.addEventListener('submit', ev => {
   else if (id === 'workform') guarded(async () => { try { await submitWork(); } catch (e) { const snap = readWorkForm(); ui.work.err = friendly(e); renderWork(); refill(snap); } });
 });
 document.addEventListener('keydown', ev => {
-  if (ev.key === 'Escape') { const m = document.getElementById('login'); if (m && !m.hidden) closeAuth(); const w = document.getElementById('workmodal'); if (w && !w.hidden) closeWork(); }
+  if (ev.key === 'Escape') { const m = document.getElementById('login'); if (m && !m.hidden) closeAuth(); const w = document.getElementById('workmodal'); if (w && !w.hidden) closeWork(); if (adminOpen()) closeAdmin(); }
   if (ev.target.id === 'note-text' && ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); submitNote(); }
+  if (ev.target.classList && ev.target.classList.contains('cm-text') && ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); const f = ev.target.form; guarded(() => submitComment(f)); }
 });
 
 document.addEventListener('input', ev => {
   const t = ev.target;
   if (t.id === 'note-text') { const e = document.getElementById('note-err'); if (e) e.hidden = true; }
+  if (t.tagName === 'TEXTAREA' && t.classList.contains('auto')) autoSize(t, true);
+  if (t.classList && (t.classList.contains('cm-text') || t.classList.contains('cm-name'))) {
+    const f = t.form, key = `${f.dataset.p}-${f.dataset.m}`, d = ui.cmDraft[key] = ui.cmDraft[key] || {};
+    if (t.classList.contains('cm-text')) { d.text = t.value; f.querySelector('.cm-count').textContent = `${t.value.length}/500`; } else d.name = t.value;
+    const er = f.querySelector('.cm-err'); if (er) er.hidden = true;
+  }
   if (t.closest && t.closest('#authcard')) { const m = document.getElementById('auth-msg'); if (m && !m.classList.contains('ok-text')) m.hidden = true; ui.authMsg = null; }
   const bind = t.dataset.bind; if (!bind) return;
   const p = cur();
@@ -1211,6 +1343,7 @@ document.addEventListener('input', ev => {
 });
 document.addEventListener('change', async ev => {
   const t = ev.target;
+  if (t.id === 'adm-guest') { const on = t.checked; guarded(async () => { try { await Store.setGuestComments(on); } finally { afterAdmin(); } toast(on ? '방문자 댓글을 켰습니다' : '방문자 댓글을 껐습니다'); }); return; }
   if (t.id === 'upfile' && t.files.length) await addFiles(t.files, t.dataset.m);
   else if (t.id && t.id.startsWith('rfile-') && t.files[0]) setResultFile(t.files[0], t.dataset.m);
   else if (t.id === 'wk-img' && t.files[0]) { const snap = readWorkForm(); ui.work.file = t.files[0]; ui.work.removeImg = false; renderWork(); refill(snap); }

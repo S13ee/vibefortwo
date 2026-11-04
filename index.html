@@ -25,7 +25,7 @@
       <button class="add-proj" data-act="add-project" hidden>+ 새 프로젝트</button>
     </div>
     <div class="side-foot">
-      <p class="whoami" id="whoami" hidden></p>
+      <button class="whoami" id="whoami" type="button" hidden></button>
       <button class="btn login-side" data-act="open-login">로그인</button>
       <p class="savenote" id="savenote"></p>
     </div>
@@ -43,6 +43,10 @@
 <div class="modal" id="workmodal" hidden>
   <div class="modal-bg" data-act="close-work"></div>
   <div class="login-card work-card" id="workcard" role="dialog" aria-modal="true" aria-label="작업"></div>
+</div>
+<div class="modal" id="adminmodal" hidden>
+  <div class="modal-bg" data-act="close-admin"></div>
+  <div class="login-card admin-card" id="admincard" role="dialog" aria-modal="true" aria-label="관리자 설정"></div>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
 
