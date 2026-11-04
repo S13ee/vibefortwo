@@ -28,6 +28,9 @@ const isFileKind = k => k === 'program' || k === 'file';
 const IMG_EXT = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
 const safeName = (n, d) => n.replace(/[^A-Za-z0-9._-]/g, '_').slice(-60) || d;
 const resUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r) : null) : (r.data || null);
+// 받기 버튼용 주소: Supabase 파일은 '내려받기'로 열리게, 미리보기 모드는 저장된 내용 그대로
+const dlUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r, true) : null) : (r.data || null);
+const fileSafe = n => String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80);
 
 let state = { members: [], projects: [], works: [] };
 const auth = { user: null, me: null };
@@ -42,8 +45,8 @@ const can = {
   manage: () => lv() >= 2,
   admin: () => lv() >= 3,
   entry: mid => lv() >= 3 || (lv() >= 1 && auth.me.id === mid),
-  delNote: n => lv() >= 2 || (lv() >= 1 && n.by === auth.me.id),
-  editMember: m => !!(m && auth.me && m.id !== auth.me.id && (lv() >= 3 || (lv() >= 2 && ROLE_LV[m.role] <= 1)))
+  delNote: n => lv() >= 3 || (lv() >= 1 && n.by === auth.me.id),
+  editMember: m => !!(m && auth.me && m.id !== auth.me.id && lv() >= 3)
 };
 const active = () => state.members.filter(m => m.role !== 'pending');
 const pendings = () => state.members.filter(m => m.role === 'pending');
@@ -70,7 +73,7 @@ function statusLine() {
 function friendly(e) {
   const m = (e && (e.message || e.error_description)) || '';
   if (/row-level security|permission|42501/i.test(m)) return '권한이 없습니다.';
-  if (/기간은 관리자만/.test(m)) return '프로젝트 기간은 관리자만 바꿀 수 있습니다.';
+  if (/기간은 (관리자|매니저)/.test(m)) return '프로젝트 기간은 매니저 이상만 바꿀 수 있습니다.';
   if (/Failed to fetch|NetworkError/i.test(m)) return '인터넷 연결을 확인해 주세요.';
   if (/duplicate key/i.test(m)) return '이미 있는 항목입니다. 새로고침 후 다시 시도해 주세요.';
   return m ? m : '잠시 후 다시 시도해 주세요.';
@@ -286,7 +289,7 @@ const Live = {
     await sb.storage.from(BUCKET).remove([rec.path]);
     const e = ent(p, mid); e.files = e.files.filter(x => x.id !== rec.id);
   },
-  fileUrl(rec) { return sb.storage.from(BUCKET).getPublicUrl(rec.path).data.publicUrl; },
+  fileUrl(rec, dl) { const n = dl ? (fileSafe(rec.name).replace(/[&#?=+%]/g, '_') || true) : null; return sb.storage.from(BUCKET).getPublicUrl(rec.path, dl ? { download: n } : undefined).data.publicUrl; },
   async fileContent(rec) {
     const url = this.fileUrl(rec);
     if (rec.kind === 'image') return url;
@@ -485,7 +488,7 @@ function calView(p) {
 }
 function picking(p) { return ui.pick && ui.pick.pid === p.id; }
 function calHTML(p) {
-  const s = parseD(p.start), e = parseD(p.end), ok = s && e && e >= s, edit = can.admin();
+  const s = parseD(p.start), e = parseD(p.end), ok = s && e && e >= s, edit = can.manage();
   const v = calView(p), yy = v.y, mm = v.m;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const first = new Date(yy, mm, 1), last = new Date(yy, mm + 1, 0).getDate();
@@ -521,7 +524,7 @@ function statusHTML(p) {
   return `<div class="status"><b>${big}</b><span>${small}</span></div>`;
 }
 function datesHTML(p) {
-  const edit = can.admin();
+  const edit = can.manage();
   const hint = !edit ? '' : picking(p) ? '이제 종료일을 누르세요' : (p.start && p.end ? '다시 정하려면 달력에서 새 시작일을 누르세요' : '달력에서 시작일을 누르세요');
   return `<div class="pick-sum">
       <div class="pk${picking(p) ? '' : ' on'}"><span>시작일</span><b>${p.start ? fmtShort(p.start) : '—'}</b></div>
@@ -562,7 +565,7 @@ function membersHTML() {
       : `<span class="chip${me}"><i></i>${esc(m.name)}${chipTag(m)}</span>`;
   }).join('');
   const n = pendings().length;
-  const pend = can.manage() && n ? `<button class="btn" data-act="toggle-pending" aria-expanded="${ui.showPending}">가입 신청 ${n}</button>` : '';
+  const pend = can.admin() && n ? `<button class="btn" data-act="toggle-pending" aria-expanded="${ui.showPending}">가입 신청 ${n}</button>` : '';
   return `<div class="chips">${chips}${pend}</div>`;
 }
 function memberBarHTML() {
@@ -579,7 +582,7 @@ function memberBarHTML() {
       out += `<div class="mbar"><p><b>${esc(m.name)}</b> · ${ROLE_KO[m.role]}</p>${btns.join('')}<button class="btn ghost" data-act="member-menu" data-m="${m.id}">닫기</button></div>`;
     }
   }
-  if (ui.showPending && can.manage()) {
+  if (ui.showPending && can.admin()) {
     const rows = pendings().map(x => `<li><span>${esc(x.name)}</span>
       <button class="btn solid" data-act="approve" data-m="${x.id}">승인</button>
       <button class="btn ghost" data-act="reject" data-m="${x.id}">거절</button></li>`).join('');
@@ -604,7 +607,7 @@ function resultHTML(m, e, id, edit, okUrl) {
           <a class="btn ghost" id="o-${id}" href="${okUrl ? esc(e.url.trim()) : '#'}" target="_blank" rel="noopener" ${okUrl ? '' : 'hidden'}>열기</a>
         </div>`;
   } else {
-    const r = e.res, url = resUrl(r), input = edit ? `<input id="rfile-${id}" class="sr" type="file" data-m="${m.id}">` : '';
+    const r = e.res, url = dlUrl(r), input = edit ? `<input id="rfile-${id}" class="sr" type="file" data-m="${m.id}">` : '';
     if (r) {
       const del = !edit ? '' : ui.resDel === m.id
         ? `<button class="btn danger" data-act="res-del" data-m="${m.id}">한 번 더 누르면 삭제</button>`
@@ -661,6 +664,7 @@ function panelHTML(p) {
         <span class="sp"></span>
         ${edit ? `<label class="btn" for="htmlfile">HTML 파일 불러오기</label><input id="htmlfile" class="sr" type="file" accept=".html,.htm,text/html" data-m="${m.id}">` : ''}
         <button class="btn" data-act="copy-html" data-m="${m.id}">코드 복사</button>
+        ${e.html.trim() ? `<button class="btn" data-act="dl-html" data-m="${m.id}">HTML 내려받기</button>` : ''}
       </div>
       ${ui.htmlView === 'code'
         ? `<textarea id="html-${p.id}-${m.id}" class="code" spellcheck="false" data-bind="entry" data-m="${m.id}" data-f="html" placeholder="${edit ? '<!doctype html> 부터 붙여 넣거나, HTML 파일을 불러오세요.' : '아직 HTML이 없습니다.'}"${ro}>${esc(e.html)}</textarea>`
@@ -674,10 +678,12 @@ function panelHTML(p) {
       const del = !edit ? '' : ui.pendingDel === f.id
         ? `<button class="btn danger" data-act="del-file" data-m="${m.id}" data-id="${f.id}">한 번 더 누르면 삭제</button>`
         : `<button class="btn ghost" data-act="del-file" data-m="${m.id}" data-id="${f.id}">삭제</button>`;
-      const dl = LIVE && f.path ? `<a class="btn ghost" href="${esc(Live.fileUrl(f))}" target="_blank" rel="noopener">열기</a>` : '';
+      const open = LIVE && f.path ? `<a class="btn ghost" href="${esc(Live.fileUrl(f))}" target="_blank" rel="noopener">열기</a>` : '';
+      const dl = LIVE ? (f.path ? `<a class="btn" href="${esc(dlUrl(f))}" download="${esc(f.name)}">받기</a>` : '')
+        : f.data ? `<button class="btn" data-act="dl-file" data-m="${m.id}" data-id="${f.id}">받기</button>` : '';
       return `<div class="frow${vf && vf.id === f.id ? ' sel' : ''}"><span class="fname">${esc(f.name)}</span>
         <span class="fmeta">${fmtSize(f.size)} · ${fmtDate(f.added)}${noteTxt}</span>
-        ${viewable ? `<button class="btn" data-act="view-file" data-id="${f.id}">${vf && vf.id === f.id ? '접기' : '보기'}</button>` : ''}${dl}${del}</div>`;
+        ${viewable ? `<button class="btn" data-act="view-file" data-id="${f.id}">${vf && vf.id === f.id ? '접기' : '보기'}</button>` : ''}${open}${dl}${del}</div>`;
     }).join('') : `<div class="empty-files">${edit ? '기획서, HTML·CSS·JS 파일, 화면 캡처 등을 올려 두세요.' : '올라온 파일이 없습니다.'}</div>`;
     let viewer = '';
     if (vf) {
@@ -716,12 +722,12 @@ function workData(it) {
     const w = it.w;
     return { title: w.title, topic: w.topic, url: w.url, html: w.html, img: w.image ? (LIVE ? Live.imgUrl(w.image) : w.image) : null, meta: '개인 작업', prog: null };
   }
-  const e = it.e, k = rkOf(e), res = isFileKind(k) ? e.res : null, rurl = resUrl(res);
+  const e = it.e, k = rkOf(e), res = isFileKind(k) ? e.res : null, rurl = resUrl(res), rdl = dlUrl(res);
   const img = (e.files || []).find(f => f.kind === 'image' && (LIVE ? f.path : f.data));
   const resImg = res && rurl && IMG_EXT.test(res.name) ? rurl : null;
   return { title: e.title, topic: e.topic, url: isFileKind(k) ? '' : e.url, html: e.html,
     img: resImg || (img ? (LIVE ? Live.fileUrl(img) : img.data) : null),
-    file: res && rurl ? { name: res.name, url: rurl } : null, kind: RK[k],
+    file: res && rdl ? { name: res.name, url: rdl } : null, kind: RK[k],
     meta: `Project ${it.p.no} · ${RK[k]}`, prog: +e.progress || 0 };
 }
 const hasVis = it => { const d = workData(it); return !!((d.html || '').trim() || d.img); };
@@ -795,7 +801,7 @@ function renderWork() {
       ${vis}${w.detail ? `<p class="wv-detail">${esc(w.detail)}</p>` : ''}
       <div class="wv-actions">
         ${okUrl ? `<a class="btn solid" href="${esc(url)}" target="_blank" rel="noopener">${esc(hostOf(url) || '링크')} 열기 ↗</a>` : ''}
-        ${(w.html || '').trim() ? `<button class="btn" data-act="work-copy" data-id="${w.id}">HTML 복사</button>` : ''}
+        ${(w.html || '').trim() ? `<button class="btn" data-act="work-copy" data-id="${w.id}">HTML 복사</button><button class="btn" data-act="work-dl" data-id="${w.id}">HTML 내려받기</button>` : ''}
         <span class="sp"></span>
         ${canWork(w) ? `<button class="btn" data-act="work-edit" data-id="${w.id}">수정</button>
           ${st.delAsk ? `<button class="btn danger" data-act="work-del" data-id="${w.id}">한 번 더 누르면 삭제</button>` : `<button class="btn ghost" data-act="work-del" data-id="${w.id}">삭제</button>`}` : ''}
@@ -1013,6 +1019,8 @@ async function copyText(text, fallbackEl) {
   try { await navigator.clipboard.writeText(text); toast('복사했습니다'); }
   catch (e) { if (fallbackEl) { fallbackEl.focus(); fallbackEl.select && fallbackEl.select(); } toast('선택해 두었습니다. Ctrl+C로 복사하세요'); }
 }
+function saveUrl(name, url) { const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+function saveText(name, text, type) { const u = URL.createObjectURL(new Blob([text], { type: (type || 'text/plain') + ';charset=utf-8' })); saveUrl(name, u); setTimeout(() => URL.revokeObjectURL(u), 4000); }
 function readAsDataURL(f) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); }); }
 async function addFiles(list, mid) {
   const p = cur(); if (!can.entry(mid)) return;
@@ -1056,6 +1064,7 @@ document.addEventListener('click', ev => {
   else if (a === 'work-edit') openWork('edit', b.dataset.id);
   else if (a === 'close-work') closeWork();
   else if (a === 'work-img-x') { const snap = readWorkForm(); ui.work.file = null; ui.work.removeImg = true; renderWork(); refill(snap); }
+  else if (a === 'work-dl') { const w = state.works.find(x => x.id === b.dataset.id); if (w && (w.html || '').trim()) { const name = `${fileSafe(w.title) || 'work'}.html`; saveText(name, w.html, 'text/html'); toast(`${name}을(를) 내려받았습니다`); } }
   else if (a === 'work-copy') { const w = state.works.find(x => x.id === b.dataset.id); if (w) copyText(w.html); }
   else if (a === 'work-del') {
     const w = state.works.find(x => x.id === b.dataset.id); if (!w) return;
@@ -1074,13 +1083,13 @@ document.addEventListener('click', ev => {
   else if (a === 'reset-pw') guarded(doResetPw);
   else if (a === 'cal-move') { const v = calView(p); v.m += +b.dataset.d; if (v.m < 0) { v.m = 11; v.y--; } if (v.m > 11) { v.m = 0; v.y++; } document.getElementById('cal').innerHTML = calHTML(p); }
   else if (a === 'cal-day') {
-    if (!can.admin()) return;
+    if (!can.manage()) return;
     const d = b.dataset.date;
     if (picking(p) && p.start && d >= p.start) { p.end = d; ui.pick = null; queueProject(p, { start: p.start, end: p.end }, 50); }
     else { p.start = d; p.end = ''; ui.pick = { pid: p.id }; }
     renderPeriod(p); renderSidebar();
   }
-  else if (a === 'cal-reset') { if (!can.admin()) return; p.start = ''; p.end = ''; ui.pick = null; queueProject(p, { start: '', end: '' }, 50); renderPeriod(p); }
+  else if (a === 'cal-reset') { if (!can.manage()) return; p.start = ''; p.end = ''; ui.pick = null; queueProject(p, { start: '', end: '' }, 50); renderPeriod(p); }
   else if (a === 'del-note') {
     const id = b.dataset.id;
     if (ui.pendingNote === id) guarded(async () => { await Store.delNote(p, id); ui.pendingNote = null; renderBoard(p); toast('노트를 지웠습니다'); });
@@ -1122,6 +1131,15 @@ document.addEventListener('click', ev => {
   else if (a === 'approve') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); await Store.setRole(m, 'member'); renderMain(); toast(`${m.name}의 가입을 승인했습니다`); });
   else if (a === 'reject') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); await Store.removeMember(m); renderMain(); toast(`${m.name}의 신청을 거절했습니다`); });
   else if (a === 'copy-url') { const i = document.getElementById(b.dataset.target); if (!i.value.trim()) { toast('주소가 비어 있습니다'); return; } copyText(i.value.trim(), i); }
+  else if (a === 'dl-html') {
+    const m = state.members.find(x => x.id === b.dataset.m), e = ent(p, b.dataset.m); if (!e.html.trim()) { toast('내려받을 HTML이 없습니다'); return; }
+    const name = `${fileSafe(e.title) || (m ? m.name : 'html')}_Project${p.no}.html`;
+    saveText(name, e.html, 'text/html'); toast(`${name}을(를) 내려받았습니다`);
+  }
+  else if (a === 'dl-file') {
+    const rec = ent(p, b.dataset.m).files.find(f => f.id === b.dataset.id); if (!rec || !rec.data) return;
+    if (rec.kind === 'image') saveUrl(rec.name, rec.data); else saveText(rec.name, rec.data, rec.type || 'text/plain');
+  }
   else if (a === 'copy-html') { const h = ent(p, b.dataset.m).html; if (!h.trim()) { toast('복사할 HTML이 없습니다'); return; } copyText(h, document.querySelector('.code')); }
   else if (a === 'toggle-panel') {
     const mid = b.dataset.m; ui.panel = ui.panel === mid ? null : mid; ui.viewFile = null; ui.pendingDel = null; renderMain();
