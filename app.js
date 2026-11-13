@@ -32,7 +32,11 @@ const resUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r) : null) : (r.da
 const dlUrl = r => !r ? null : LIVE ? (r.path ? Live.fileUrl(r, true) : null) : (r.data || null);
 const fileSafe = n => String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80);
 
-let state = { members: [], projects: [], works: [], settings: { guestComments: true }, commentsReady: true };
+// 매니저 권한 스위치: 관리자 설정 창에서 켜고 끕니다 (관리자는 항상 전부 가능)
+const MGR_PERMS = [['create', '새 프로젝트 만들기'], ['subtitle', '부제 수정'], ['period', '기간 정하기'], ['guest', '방문자 댓글 켜기/끄기'],
+  ['notes', '다른 사람 노트 지우기'], ['comments', '다른 사람 댓글 지우기'], ['approve', '가입 신청 승인·거절'], ['remove', '일반 멤버 빼기']];
+const MGR_DEFAULT = { create: true, subtitle: true, period: true, guest: false, notes: false, comments: false, approve: false, remove: false };
+let state = { members: [], projects: [], works: [], settings: { guestComments: true, mgr: { ...MGR_DEFAULT } }, commentsReady: true };
 const auth = { user: null, me: null };
 const ui = { view:'home', pid:null, panel:null, tab:'plan', htmlView:'code', viewFile:null, viewData:null, pendingDel:null,
   worksBy:'all', work:null, memberMenu:null, confirmRemove:null, showPending:false, pendingNote:null, authTab:'login', authMsg:null, busy:false, loadError:null,
@@ -44,10 +48,12 @@ const can = {
   write: () => lv() >= 1,
   manage: () => lv() >= 2,
   admin: () => lv() >= 3,
+  perm: k => lv() >= 3 || (lv() === 2 && !!(state.settings.mgr || MGR_DEFAULT)[k]),
+  menu: () => lv() >= 3 || (lv() === 2 && ['guest', 'approve', 'remove'].some(k => can.perm(k))),
   entry: mid => lv() >= 3 || (lv() >= 1 && auth.me.id === mid),
-  delNote: n => lv() >= 3 || (lv() >= 1 && n.by === auth.me.id),
-  editMember: m => !!(m && auth.me && m.id !== auth.me.id && lv() >= 3),
-  delComment: c => lv() >= 3 || (lv() >= 1 && (c.by === auth.me.id || c.mid === auth.me.id))
+  delNote: n => can.perm('notes') || (lv() >= 1 && n.by === auth.me.id),
+  editMember: m => !!(m && auth.me && m.id !== auth.me.id && (lv() >= 3 ? m.role !== 'admin' : can.perm('remove') && m.role === 'member')),
+  delComment: c => can.perm('comments') || (lv() >= 1 && (c.by === auth.me.id || c.mid === auth.me.id))
 };
 const active = () => state.members.filter(m => m.role !== 'pending');
 const pendings = () => state.members.filter(m => m.role === 'pending');
@@ -108,7 +114,7 @@ const Local = {
     try { s = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
     if (!s) { try { s = migrate(JSON.parse(localStorage.getItem(OLD_KEY))); } catch (e) {} }
     if (!s || !Array.isArray(s.projects) || !s.projects.length || !Array.isArray(s.members)) s = demoSeed();
-    state = s; state.works = state.works || []; state.settings = state.settings || { guestComments: true }; state.commentsReady = true;
+    state = s; state.works = state.works || []; state.settings = state.settings || { guestComments: true }; state.settings.mgr = { ...MGR_DEFAULT, ...(state.settings.mgr || {}) }; state.commentsReady = true;
     state.projects.forEach(p => { p.notes = p.notes || []; p.entries = p.entries || {}; p.comments = p.comments || []; });
     try { this.demoAs = localStorage.getItem(KEY + ':as') || 'admin'; } catch (e) {}
     this.applyDemo();
@@ -126,6 +132,8 @@ const Local = {
   async addComment(p, mid, text, guest) { p.comments.push({ id: uid(), mid, by: guest ? null : auth.me.id, guest: guest || null, text, at: Date.now() }); this.persist(); },
   async delComment(p, id) { p.comments = p.comments.filter(c => c.id !== id); this.persist(); },
   async setGuestComments(on) { state.settings.guestComments = on; this.persist(); },
+  async setMgr(k, on) { state.settings.mgr[k] = on; this.persist(); },
+  async verifyPassword(pw) { if (!pw) throw new Error('비밀번호를 입력해 주세요'); },
   async deleteProject(p) { state.projects = state.projects.filter(x => x.id !== p.id); this.persist(); },
   async updateProject(p) { this.persist(); },
   async setResult(p, mid, f) {
@@ -187,7 +195,7 @@ const Live = {
       sb.from('vft_files').select('*').order('created_at', { ascending: false }),
       sb.from('vft_works').select('*').order('created_at', { ascending: false }),
       sb.from('vft_comments').select('*').order('created_at'),
-      sb.from('vft_settings').select('guest_comments').eq('id', 1).maybeSingle()
+      sb.from('vft_settings').select('*').eq('id', 1).maybeSingle()
     ]);
     // 댓글·설정 표는 나중에 추가된 것이라, 아직 SQL을 실행하지 않았어도 나머지는 정상으로 보이게 합니다
     const bad = res.slice(0, 6).find(r => r.error); if (bad) throw bad.error;
@@ -202,7 +210,9 @@ const Live = {
     state.works = wk.map(x => ({ id: x.id, by: x.member_id, title: x.title, topic: x.topic, detail: x.detail, url: x.url, html: x.html, image: x.image_path, at: Date.parse(x.created_at) }));
     state.commentsReady = !cm.error;
     if (!cm.error) cm.data.forEach(x => { const pr = byId[x.project_id]; if (pr) pr.comments.push({ id: x.id, mid: x.member_id, by: x.author_id, guest: x.guest_name, text: x.body, at: Date.parse(x.created_at) }); });
-    state.settings = { guestComments: st.error || !st.data ? true : !!st.data.guest_comments };
+    const sd = !st.error && st.data ? st.data : null, mgr = { ...MGR_DEFAULT };
+    if (sd) MGR_PERMS.forEach(([k]) => { if (typeof sd['mgr_' + k] === 'boolean') mgr[k] = sd['mgr_' + k]; });
+    state.settings = { guestComments: sd ? !!sd.guest_comments : true, mgr, mgrReady: !!sd && typeof sd.mgr_create === 'boolean' };
     auth.me = auth.user ? state.members.find(x => x.userId === auth.user.id) || null : null;
   },
   imgUrl(path) { return sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl; },
@@ -252,6 +262,18 @@ const Live = {
     const { data, error } = await sb.from('vft_settings').update({ guest_comments: on, updated_at: new Date().toISOString() }).eq('id', 1).select('guest_comments'); if (error) throw error;
     if (!data.length) throw new Error('권한이 없습니다.');
     state.settings.guestComments = on;
+  },
+  async setMgr(k, on) {
+    const { data, error } = await sb.from('vft_settings').update({ ['mgr_' + k]: on, updated_at: new Date().toISOString() }).eq('id', 1).select('id'); if (error) throw error;
+    if (!data.length) throw new Error('권한이 없습니다.');
+    state.settings.mgr[k] = on;
+  },
+  // 중요한 삭제 전에 지금 로그인한 계정의 비밀번호를 한 번 더 확인합니다
+  async verifyPassword(pw) {
+    if (!pw) throw new Error('비밀번호를 입력해 주세요');
+    const email = auth.user && auth.user.email; if (!email) throw new Error('로그인 정보를 확인할 수 없습니다. 다시 로그인해 주세요.');
+    const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+    if (error) throw new Error(/invalid|credentials|password/i.test(error.message || '') || error.status === 400 ? '비밀번호가 맞지 않습니다' : friendly(error));
   },
   async deleteProject(p) {
     // 표에서 먼저 지우고(칸·노트·파일 목록은 함께 지워짐), 성공하면 저장소의 실제 파일을 정리합니다
@@ -514,7 +536,7 @@ function calView(p) {
 }
 function picking(p) { return ui.pick && ui.pick.pid === p.id; }
 function calHTML(p) {
-  const s = parseD(p.start), e = parseD(p.end), ok = s && e && e >= s, edit = can.manage();
+  const s = parseD(p.start), e = parseD(p.end), ok = s && e && e >= s, edit = can.perm('period');
   const v = calView(p), yy = v.y, mm = v.m;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const first = new Date(yy, mm, 1), last = new Date(yy, mm + 1, 0).getDate();
@@ -550,7 +572,7 @@ function statusHTML(p) {
   return `<div class="status"><b>${big}</b><span>${small}</span></div>`;
 }
 function datesHTML(p) {
-  const edit = can.manage();
+  const edit = can.perm('period');
   const hint = !edit ? '' : picking(p) ? '이제 종료일을 누르세요' : (p.start && p.end ? '다시 정하려면 달력에서 새 시작일을 누르세요' : '달력에서 시작일을 누르세요');
   return `<div class="pick-sum">
       <div class="pk${picking(p) ? '' : ' on'}"><span>시작일</span><b>${p.start ? fmtShort(p.start) : '—'}</b></div>
@@ -588,44 +610,85 @@ function membersHTML() {
 }
 
 /* ---------- admin menu (관리자 설정) ---------- */
-function openAdmin() { if (!can.admin()) return; ui.adm = { rm: null, proj: null }; document.getElementById('adminmodal').hidden = false; renderAdmin(); }
+function openAdmin() { if (!can.menu()) return; ui.adm = { rm: null, proj: null }; document.getElementById('adminmodal').hidden = false; renderAdmin(); }
 function closeAdmin() { document.getElementById('adminmodal').hidden = true; ui.adm = null; }
 function adminOpen() { const el = document.getElementById('adminmodal'); return el && !el.hidden; }
+const swRow = (id, on, title, sub) => `<label class="done-row adm-row${on ? ' on' : ''}"><input type="checkbox" id="${id}"${on ? ' checked' : ''}>
+  <span class="sw" aria-hidden="true"></span><span class="dt"><b>${title}</b>${sub ? `<small>${sub}</small>` : ''}</span></label>`;
+// 비밀번호를 한 번 더 확인하는 삭제 줄 (프로젝트 삭제, 멤버 빼기)
+const pwForm = (kind, id, msg, btn) => `<li class="adm-item warn"><form class="adm-pw" data-kind="${kind}" data-id="${id}" novalidate>
+    <p>${msg}</p>
+    <label class="adm-pwf"><span>확인을 위해 지금 로그인한 계정의 비밀번호를 입력해 주세요${LIVE ? '' : ' (미리보기에서는 아무 글자나 입력)'}</span>
+      <input type="password" autocomplete="current-password" aria-label="비밀번호"></label>
+    <p class="err-text adm-pwerr" hidden></p>
+    <span class="adm-btns"><button class="btn danger" type="submit">${btn}</button><button class="btn ghost" type="button" data-act="adm-cancel">취소</button></span>
+  </form></li>`;
 function renderAdmin() {
   if (!adminOpen()) return;
-  if (!can.admin()) { closeAdmin(); return; }
-  const st = ui.adm || (ui.adm = { rm: null, proj: null }), card = document.getElementById('admincard');
-  const on = !!state.settings.guestComments, pend = pendings(), mems = active();
-  const guest = state.commentsReady ? `<label class="done-row adm-row${on ? ' on' : ''}"><input type="checkbox" id="adm-guest"${on ? ' checked' : ''}>
-      <span class="sw" aria-hidden="true"></span><span class="dt"><b>${on ? '방문자 댓글 켜짐' : '방문자 댓글 꺼짐'}</b>
-      <small>${on ? '로그인하지 않은 사람도 이름을 적고 댓글을 달 수 있습니다' : '로그인한 멤버만 댓글을 쓸 수 있습니다. 이미 달린 방문자 댓글은 그대로 보입니다'}</small></span></label>`
-    : '<p class="adm-none">댓글 기능을 쓰려면 Supabase에서 댓글용 SQL을 먼저 실행해 주세요.</p>';
-  const pendRows = pend.length ? pend.map(x => `<li class="adm-item"><span class="adm-name">${esc(x.name)}</span>
-      <span class="adm-sub">${x.at ? fmtDate(x.at) + ' 신청' : '승인 대기'}</span>
-      <span class="adm-btns"><button class="btn solid" data-act="approve" data-m="${x.id}">승인</button><button class="btn ghost" data-act="reject" data-m="${x.id}">거절</button></span></li>`).join('')
-    : '<li class="adm-none">대기 중인 신청이 없습니다</li>';
-  const memRows = mems.map(x => {
-    const self = auth.me && x.id === auth.me.id;
-    if (st.rm === x.id) return `<li class="adm-item warn"><p>${esc(x.name)}을(를) 빼면 모든 프로젝트의 ${esc(x.name)} 칸 내용, 결과물, 파일, 댓글이 함께 지워집니다. 되돌릴 수 없습니다.</p>
-      <span class="adm-btns"><button class="btn danger" data-act="remove-member" data-m="${x.id}">빼기</button><button class="btn ghost" data-act="adm-cancel">취소</button></span></li>`;
-    const btns = self || x.role === 'admin' ? '' : `<button class="btn" data-act="set-role" data-m="${x.id}" data-role="${x.role === 'manager' ? 'member' : 'manager'}">${x.role === 'manager' ? '매니저 해제' : '매니저로 지정'}</button>
-      <button class="btn ghost" data-act="ask-remove" data-m="${x.id}">빼기</button>`;
-    return `<li class="adm-item"><span class="adm-name">${esc(x.name)}</span><span class="adm-role r-${x.role}">${ROLE_KO[x.role]}${self ? ' · 나' : ''}</span><span class="adm-btns">${btns}</span></li>`;
-  }).join('');
-  const projs = [...state.projects].sort((a, b) => a.no - b.no);
-  const projRows = projs.length ? projs.map(x => st.proj === x.id
-    ? `<li class="adm-item warn"><p><b>Project ${x.no}</b>${x.sub ? ` (${esc(x.sub)})` : ''}의 모든 칸 내용, 결과물, 노트, 댓글, 파일이 함께 지워집니다. 되돌릴 수 없습니다.</p>
-      <span class="adm-btns"><button class="btn danger" data-act="adm-del-proj" data-id="${x.id}">삭제</button><button class="btn ghost" data-act="adm-cancel">취소</button></span></li>`
-    : `<li class="adm-item"><span class="adm-name">Project ${x.no}</span><span class="adm-sub">${x.sub ? esc(x.sub) : '부제 없음'}</span>
-      <span class="adm-btns"><button class="btn ghost" data-act="adm-ask-proj" data-id="${x.id}">삭제</button></span></li>`).join('')
-    : '<li class="adm-none">프로젝트가 없습니다</li>';
+  if (!can.menu()) { closeAdmin(); return; }
+  const st = ui.adm || (ui.adm = { rm: null, proj: null }), card = document.getElementById('admincard'), isAdm = can.admin();
+  const on = !!state.settings.guestComments, pend = pendings(), mems = active(), out = [];
+  if (can.perm('guest')) out.push(`<section class="adm-sec"><h3>방문자 댓글</h3>${state.commentsReady
+    ? swRow('adm-guest', on, on ? '방문자 댓글 켜짐' : '방문자 댓글 꺼짐', on ? '로그인하지 않은 사람도 이름을 적고 댓글을 달 수 있습니다' : '로그인한 멤버만 댓글을 쓸 수 있습니다. 이미 달린 방문자 댓글은 그대로 보입니다')
+    : '<p class="adm-none">댓글 기능을 쓰려면 Supabase에서 댓글용 SQL을 먼저 실행해 주세요.</p>'}</section>`);
+  if (can.perm('approve')) {
+    const rows = pend.length ? pend.map(x => `<li class="adm-item"><span class="adm-name">${esc(x.name)}</span>
+        <span class="adm-sub">${x.at ? fmtDate(x.at) + ' 신청' : '승인 대기'}</span>
+        <span class="adm-btns"><button class="btn solid" data-act="approve" data-m="${x.id}">승인</button><button class="btn ghost" data-act="reject" data-m="${x.id}">거절</button></span></li>`).join('')
+      : '<li class="adm-none">대기 중인 신청이 없습니다</li>';
+    out.push(`<section class="adm-sec"><h3>가입 신청${pend.length ? `<small>${pend.length}</small>` : ''}</h3><ul class="adm-list">${rows}</ul></section>`);
+  }
+  if (isAdm || can.perm('remove')) {
+    const rows = mems.map(x => {
+      const self = auth.me && x.id === auth.me.id;
+      if (st.rm === x.id && can.editMember(x)) return pwForm('rm', x.id, `<b>${esc(x.name)}</b>을(를) 빼면 모든 프로젝트의 ${esc(x.name)} 칸 내용, 결과물, 파일, 댓글이 함께 지워집니다. 되돌릴 수 없습니다.`, '빼기');
+      const btns = [];
+      if (isAdm && !self && x.role !== 'admin') btns.push(`<button class="btn" data-act="set-role" data-m="${x.id}" data-role="${x.role === 'manager' ? 'member' : 'manager'}">${x.role === 'manager' ? '매니저 해제' : '매니저로 지정'}</button>`);
+      if (can.editMember(x)) btns.push(`<button class="btn ghost" data-act="ask-remove" data-m="${x.id}">빼기</button>`);
+      return `<li class="adm-item"><span class="adm-name">${esc(x.name)}</span><span class="adm-role r-${x.role}">${ROLE_KO[x.role]}${self ? ' · 나' : ''}</span><span class="adm-btns">${btns.join('')}</span></li>`;
+    }).join('');
+    out.push(`<section class="adm-sec"><h3>멤버<small>${mems.length}</small></h3>${isAdm ? '' : '<p class="adm-hint">일반 멤버만 뺄 수 있습니다.</p>'}<ul class="adm-list">${rows}</ul></section>`);
+  }
+  if (isAdm) {
+    const mg = state.settings.mgr || MGR_DEFAULT, ready = !LIVE || state.settings.mgrReady;
+    out.push(`<section class="adm-sec"><h3>매니저 권한</h3>${ready
+      ? `<p class="adm-hint">켜 둔 권한만 매니저가 쓸 수 있습니다. 매니저 지정·해제와 프로젝트 삭제는 항상 관리자만 할 수 있습니다.</p>
+         <div class="adm-perms">${MGR_PERMS.map(([k, l]) => swRow('mgr-' + k, !!mg[k], l, '')).join('')}</div>`
+      : '<p class="adm-none">매니저 권한 스위치를 쓰려면 Supabase에서 매니저 권한용 SQL을 먼저 실행해 주세요.</p>'}</section>`);
+    const projs = [...state.projects].sort((a, b) => a.no - b.no);
+    const rows = projs.length ? projs.map(x => st.proj === x.id
+      ? pwForm('proj', x.id, `<b>Project ${x.no}</b>${x.sub ? ` (${esc(x.sub)})` : ''}의 모든 칸 내용, 결과물, 노트, 댓글, 파일이 함께 지워집니다. 되돌릴 수 없습니다.`, '삭제')
+      : `<li class="adm-item"><span class="adm-name">Project ${x.no}</span><span class="adm-sub">${x.sub ? esc(x.sub) : '부제 없음'}</span>
+        <span class="adm-btns"><button class="btn ghost" data-act="adm-ask-proj" data-id="${x.id}">삭제</button></span></li>`).join('')
+      : '<li class="adm-none">프로젝트가 없습니다</li>';
+    out.push(`<section class="adm-sec"><h3>프로젝트<small>${projs.length}</small></h3><ul class="adm-list">${rows}</ul></section>`);
+  }
+  card.setAttribute('aria-label', isAdm ? '관리자 설정' : '매니저 설정');
   card.innerHTML = `<button class="login-x" type="button" data-act="close-admin" aria-label="닫기">×</button>
-    <h2>관리자 설정</h2>
-    <p class="login-sub">관리자만 볼 수 있는 메뉴입니다.</p>
-    <section class="adm-sec"><h3>방문자 댓글</h3>${guest}</section>
-    <section class="adm-sec"><h3>가입 신청${pend.length ? `<small>${pend.length}</small>` : ''}</h3><ul class="adm-list">${pendRows}</ul></section>
-    <section class="adm-sec"><h3>멤버<small>${mems.length}</small></h3><ul class="adm-list">${memRows}</ul></section>
-    <section class="adm-sec"><h3>프로젝트<small>${projs.length}</small></h3><ul class="adm-list">${projRows}</ul></section>`;
+    <h2>${isAdm ? '관리자 설정' : '매니저 설정'}</h2>
+    <p class="login-sub">${isAdm ? '관리자만 볼 수 있는 메뉴입니다.' : '관리자가 허용한 메뉴만 보입니다.'}</p>
+    ${out.join('')}`;
+  const pw = card.querySelector('.adm-pw input'); if (pw) pw.focus();
+}
+async function submitAdminPw(form) {
+  const kind = form.dataset.kind, id = form.dataset.id, input = form.querySelector('input'), err = form.querySelector('.adm-pwerr'), btn = form.querySelector('button[type=submit]');
+  const say = t => { err.textContent = t; err.hidden = false; input.focus(); input.select(); };
+  if (!input.value) return say('비밀번호를 입력해 주세요');
+  btn.disabled = true;
+  try { await Store.verifyPassword(input.value); }
+  catch (e) { btn.disabled = false; return say(e.message || '비밀번호가 맞지 않습니다'); }
+  try {
+    if (kind === 'proj') {
+      const x = state.projects.find(y => y.id === id); if (!can.admin() || !x) return;
+      await Store.deleteProject(x); ui.adm.proj = null;
+      if (ui.view === 'project' && ui.pid === x.id) goHome();
+      afterAdmin(); toast(`Project ${x.no}을(를) 지웠습니다`);
+    } else {
+      const m = state.members.find(y => y.id === id); if (!m || !can.editMember(m)) return;
+      await Store.removeMember(m); if (ui.panel === m.id) ui.panel = null; ui.adm.rm = null;
+      afterAdmin(); toast(`${m.name}을(를) 멤버에서 뺐습니다`);
+    }
+  } catch (e) { console.error(e); btn.disabled = false; say(friendly(e)); if (LIVE) { await refresh(); } }
 }
 function afterAdmin() { renderSidebar(); renderAuthButtons(); if (ui.view !== 'home') renderMain(); renderAdmin(); }
 
@@ -966,7 +1029,7 @@ function renderSidebar() {
     `<button class="pitem" data-act="pick" data-id="${p.id}" aria-current="${ui.view === 'project' && p.id === ui.pid}">
       <span class="pname">Project ${p.no}</span><span class="psub">${p.sub ? esc(p.sub) : '부제 없음'}</span></button>`).join('')
     || '<p class="plist-empty">아직 프로젝트가 없습니다</p>';
-  document.querySelector('.add-proj').hidden = !can.manage();
+  document.querySelector('.add-proj').hidden = !can.perm('create');
   const wl = document.querySelector('.navlink'); wl.setAttribute('aria-current', ui.view === 'works');
   const n = worksList().length; document.getElementById('workcount').textContent = n ? n : '';
 }
@@ -975,12 +1038,12 @@ function renderAuthButtons() {
   top.textContent = auth.me ? auth.me.name : auth.user && LIVE ? '계정' : '로그인'; top.classList.toggle('signed', !!auth.user);
   side.textContent = auth.user ? '로그아웃' : '로그인'; side.dataset.act = auth.user ? 'logout' : 'open-login';
   const label = auth.me ? `${auth.me.name} · ${ROLE_KO[auth.me.role]}` : auth.user && LIVE ? (auth.user.email || '') : '';
-  const isAdm = can.admin(), n = pendings().length;
+  const isAdm = can.menu(), n = can.perm('approve') ? pendings().length : 0;
   who.innerHTML = !label ? '' : isAdm
     ? `<span>${esc(label)}</span>${n ? `<em class="adm-badge" title="가입 신청 ${n}건">신청 ${n}</em>` : ''}<span class="adm-go" aria-hidden="true">설정 ›</span>`
     : `<span>${esc(label)}</span>`;
   who.classList.toggle('is-admin', isAdm); who.disabled = !isAdm;
-  if (isAdm) { who.dataset.act = 'open-admin'; who.setAttribute('aria-label', `${label}, 관리자 설정 열기`); } else { delete who.dataset.act; who.removeAttribute('aria-label'); }
+  if (isAdm) { who.dataset.act = 'open-admin'; who.setAttribute('aria-label', `${label}, ${can.admin() ? '관리자' : '매니저'} 설정 열기`); } else { delete who.dataset.act; who.removeAttribute('aria-label'); }
   who.hidden = !label;
 }
 function renderMain() {
@@ -998,7 +1061,7 @@ function renderMain() {
   if (ui.view === 'works') { main.innerHTML = worksHTML(); mountWorks(); return; }
   const p = cur(); if (!p) { goHome(); return; }
   const pendingMe = auth.me && auth.me.role === 'pending';
-  const subEdit = can.manage();
+  const subEdit = can.perm('subtitle');
   main.innerHTML = `
     ${pendingMe ? `<div class="notice">가입 신청이 접수되었습니다. 관리자가 승인하면 내 칸과 노트를 작성할 수 있습니다.</div>` : ''}
     ${ui.loadError ? `<div class="notice warn">데이터를 불러오지 못했습니다. ${esc(ui.loadError)}</div>` : ''}
@@ -1198,20 +1261,20 @@ document.addEventListener('click', ev => {
   else if (a === 'reset-pw') guarded(doResetPw);
   else if (a === 'cal-move') { const v = calView(p); v.m += +b.dataset.d; if (v.m < 0) { v.m = 11; v.y--; } if (v.m > 11) { v.m = 0; v.y++; } document.getElementById('cal').innerHTML = calHTML(p); }
   else if (a === 'cal-day') {
-    if (!can.manage()) return;
+    if (!can.perm('period')) return;
     const d = b.dataset.date;
     if (picking(p) && p.start && d >= p.start) { p.end = d; ui.pick = null; queueProject(p, { start: p.start, end: p.end }, 50); }
     else { p.start = d; p.end = ''; ui.pick = { pid: p.id }; }
     renderPeriod(p); renderSidebar();
   }
-  else if (a === 'cal-reset') { if (!can.manage()) return; p.start = ''; p.end = ''; ui.pick = null; queueProject(p, { start: '', end: '' }, 50); renderPeriod(p); }
+  else if (a === 'cal-reset') { if (!can.perm('period')) return; p.start = ''; p.end = ''; ui.pick = null; queueProject(p, { start: '', end: '' }, 50); renderPeriod(p); }
   else if (a === 'del-note') {
     const id = b.dataset.id;
     if (ui.pendingNote === id) guarded(async () => { await Store.delNote(p, id); ui.pendingNote = null; renderBoard(p); toast('노트를 지웠습니다'); });
     else { ui.pendingNote = id; renderBoard(p); }
   }
   else if (a === 'add-project') guarded(async () => {
-    if (!can.manage()) return;
+    if (!can.perm('create')) return;
     const no = Math.max(0, ...state.projects.map(x => x.no)) + 1;
     const np = await Store.createProject(no); openProject(np.id);
     const s = document.getElementById('sub-' + np.id); if (s) s.focus();
@@ -1220,12 +1283,6 @@ document.addEventListener('click', ev => {
   else if (a === 'close-admin') closeAdmin();
   else if (a === 'adm-cancel') { if (ui.adm) { ui.adm.rm = null; ui.adm.proj = null; } renderAdmin(); }
   else if (a === 'adm-ask-proj') { if (!can.admin() || !ui.adm) return; ui.adm.proj = b.dataset.id; ui.adm.rm = null; renderAdmin(); }
-  else if (a === 'adm-del-proj') guarded(async () => {
-    const x = state.projects.find(y => y.id === b.dataset.id); if (!can.admin() || !x || !ui.adm || ui.adm.proj !== x.id) return;
-    await Store.deleteProject(x); ui.adm.proj = null;
-    if (ui.view === 'project' && ui.pid === x.id) goHome();
-    afterAdmin(); toast(`Project ${x.no}을(를) 지웠습니다`);
-  });
   else if (a === 'rkind') {
     const mid = b.dataset.m, k = b.dataset.k; if (!can.entry(mid) || !RK[k]) return;
     const e = ent(p, mid); if (rkOf(e) === k) return;
@@ -1236,17 +1293,13 @@ document.addEventListener('click', ev => {
     if (ui.resDel !== mid) { ui.resDel = mid; renderMain(); return; }
     guarded(async () => { setSave('saving'); await Store.setResult(p, mid, null); ui.resDel = null; setSave('ok'); renderMain(); renderSidebar(); toast('결과물 파일을 지웠습니다'); });
   }
-  else if (a === 'ask-remove') { if (!can.admin() || !ui.adm) return; ui.adm.rm = b.dataset.m; ui.adm.proj = null; renderAdmin(); }
-  else if (a === 'remove-member') guarded(async () => {
-    const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.editMember(m) || !ui.adm || ui.adm.rm !== m.id) return;
-    await Store.removeMember(m); if (ui.panel === m.id) ui.panel = null; ui.adm.rm = null; afterAdmin(); toast(`${m.name}을(를) 멤버에서 뺐습니다`);
-  });
+  else if (a === 'ask-remove') { const m = state.members.find(x => x.id === b.dataset.m); if (!can.editMember(m) || !ui.adm) return; ui.adm.rm = m.id; ui.adm.proj = null; renderAdmin(); }
   else if (a === 'set-role') guarded(async () => {
     const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.admin()) return;
     await Store.setRole(m, b.dataset.role); afterAdmin(); toast(b.dataset.role === 'manager' ? `${m.name}을(를) 매니저로 지정했습니다` : `${m.name}의 매니저 권한을 해제했습니다`);
   });
-  else if (a === 'approve') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.admin()) return; await Store.setRole(m, 'member'); afterAdmin(); toast(`${m.name}의 가입을 승인했습니다`); });
-  else if (a === 'reject') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.admin()) return; await Store.removeMember(m); afterAdmin(); toast(`${m.name}의 신청을 거절했습니다`); });
+  else if (a === 'approve') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.perm('approve')) return; await Store.setRole(m, 'member'); afterAdmin(); toast(`${m.name}의 가입을 승인했습니다`); });
+  else if (a === 'reject') guarded(async () => { const m = state.members.find(x => x.id === b.dataset.m); if (!m || !can.perm('approve') || m.role !== 'pending') return; await Store.removeMember(m); afterAdmin(); toast(`${m.name}의 신청을 거절했습니다`); });
   else if (a === 'copy-url') { const i = document.getElementById(b.dataset.target); if (!i.value.trim()) { toast('주소가 비어 있습니다'); return; } copyText(i.value.trim(), i); }
   else if (a === 'dl-html') {
     const m = state.members.find(x => x.id === b.dataset.m), e = ent(p, b.dataset.m); if (!e.html.trim()) { toast('내려받을 HTML이 없습니다'); return; }
@@ -1304,6 +1357,7 @@ function submitNote() {
   guarded(async () => { await Store.addNote(p, text); ui.pendingNote = null; renderBoard(p); });
 }
 document.addEventListener('submit', ev => {
+  if (ev.target.classList && ev.target.classList.contains('adm-pw')) { ev.preventDefault(); submitAdminPw(ev.target); return; }
   if (ev.target.classList && ev.target.classList.contains('cm-form')) { ev.preventDefault(); const f = ev.target; guarded(() => submitComment(f)); return; }
   const id = ev.target.id; if (!['noteform', 'loginform', 'signupform', 'joinform', 'workform'].includes(id)) return;
   ev.preventDefault();
@@ -1331,7 +1385,7 @@ document.addEventListener('input', ev => {
   if (t.closest && t.closest('#authcard')) { const m = document.getElementById('auth-msg'); if (m && !m.classList.contains('ok-text')) m.hidden = true; ui.authMsg = null; }
   const bind = t.dataset.bind; if (!bind) return;
   const p = cur();
-  if (bind === 'sub') { if (!can.manage()) return; p.sub = t.value; renderSidebar(); queueProject(p, { sub: t.value }); }
+  if (bind === 'sub') { if (!can.perm('subtitle')) return; p.sub = t.value; renderSidebar(); queueProject(p, { sub: t.value }); }
   else if (bind === 'entry') {
     const mid = t.dataset.m, f = t.dataset.f; if (!can.entry(mid)) return;
     const val = f === 'progress' ? +t.value : t.type === 'checkbox' ? t.checked : t.value;
@@ -1343,7 +1397,9 @@ document.addEventListener('input', ev => {
 });
 document.addEventListener('change', async ev => {
   const t = ev.target;
-  if (t.id === 'adm-guest') { const on = t.checked; guarded(async () => { try { await Store.setGuestComments(on); } finally { afterAdmin(); } toast(on ? '방문자 댓글을 켰습니다' : '방문자 댓글을 껐습니다'); }); return; }
+  if (t.id && t.id.startsWith('mgr-')) { const k = t.id.slice(4), on = t.checked; if (!can.admin() || !(k in MGR_DEFAULT)) return;
+    guarded(async () => { try { await Store.setMgr(k, on); } finally { afterAdmin(); } toast(`매니저 권한 '${MGR_PERMS.find(x => x[0] === k)[1]}'을(를) ${on ? '켰습니다' : '껐습니다'}`); }); return; }
+  if (t.id === 'adm-guest') { if (!can.perm('guest')) return; const on = t.checked; guarded(async () => { try { await Store.setGuestComments(on); } finally { afterAdmin(); } toast(on ? '방문자 댓글을 켰습니다' : '방문자 댓글을 껐습니다'); }); return; }
   if (t.id === 'upfile' && t.files.length) await addFiles(t.files, t.dataset.m);
   else if (t.id && t.id.startsWith('rfile-') && t.files[0]) setResultFile(t.files[0], t.dataset.m);
   else if (t.id === 'wk-img' && t.files[0]) { const snap = readWorkForm(); ui.work.file = t.files[0]; ui.work.removeImg = false; renderWork(); refill(snap); }

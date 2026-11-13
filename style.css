@@ -568,3 +568,18 @@ button.whoami.is-admin:hover .adm-go{color:#fff}
 .admin-card .btn.danger{color:#FFB4A6;border-color:rgba(255,138,117,.5)}
 .admin-card .done-row small{color:rgba(242,243,240,.55)}
 .admin-card .done-row b{color:#F2F3F0}
+
+/* ---------- settings: manager permission switches + password confirm ---------- */
+.adm-hint{margin:-2px 0 2px;font-size:12px;line-height:1.55;color:rgba(242,243,240,.55)}
+.adm-perms{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.adm-perms .done-row{padding:9px 12px}
+.adm-perms .done-row b{font-size:13px;font-weight:500}
+@media (max-width:560px){.adm-perms{grid-template-columns:1fr}}
+.adm-pw{display:flex;flex-direction:column;gap:10px;width:100%}
+.adm-pwf{display:flex;flex-direction:column;gap:6px}
+.adm-pwf span{font-size:12px;color:rgba(242,243,240,.6)}
+.adm-pwf input{border:1px solid rgba(255,255,255,.14);border-radius:10px;background:rgba(0,0,0,.3);padding:9px 12px;font-size:14px;color:#F2F3F0;max-width:280px;box-shadow:inset 0 1px 3px rgba(0,0,0,.3)}
+.adm-pwf input:focus{outline:none;border-color:rgba(255,255,255,.4)}
+.adm-pw .adm-btns{margin-left:0}
+.adm-pw .err-text{margin:0}
+.adm-pw p{flex:none}
